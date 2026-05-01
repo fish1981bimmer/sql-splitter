@@ -5,7 +5,6 @@ SQL 拆分工具 - 断点续传模块
 """
 
 import json
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -78,8 +77,8 @@ class CheckpointManager:
         """
         try:
             checkpoint_file = self.get_checkpoint_file(checkpoint.input_file)
-            with open(checkpoint_file, 'wb') as f:
-                pickle.dump(checkpoint, f)
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint.to_dict(), f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
             print(f"保存检查点失败: {e}")
@@ -100,15 +99,15 @@ class CheckpointManager:
             if not checkpoint_file.exists():
                 return None
 
-            with open(checkpoint_file, 'rb') as f:
-                checkpoint = pickle.load(f)
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
 
             # 验证检查点文件是否匹配
-            if checkpoint.input_file != input_file:
-                print(f"检查点文件不匹配: {checkpoint.input_file} != {input_file}")
+            if data.get('input_file') != input_file:
+                print(f"检查点文件不匹配: {data.get('input_file')} != {input_file}")
                 return None
 
-            return checkpoint
+            return CheckpointData.from_dict(data)
         except Exception as e:
             print(f"加载检查点失败: {e}")
             return None
@@ -143,17 +142,17 @@ class CheckpointManager:
 
         for checkpoint_file in self.checkpoint_dir.glob("*.checkpoint"):
             try:
-                with open(checkpoint_file, 'rb') as f:
-                    checkpoint = pickle.load(f)
+                with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
                     checkpoints.append({
-                        'input_file': checkpoint.input_file,
-                        'output_dir': checkpoint.output_dir,
-                        'dialect': checkpoint.dialect,
-                        'total_objects': checkpoint.total_objects,
-                        'processed_objects': checkpoint.processed_objects,
-                        'timestamp': checkpoint.timestamp,
-                        'status': checkpoint.status,
-                        'progress': f"{checkpoint.processed_objects}/{checkpoint.total_objects}",
+                        'input_file': data.get('input_file'),
+                        'output_dir': data.get('output_dir'),
+                        'dialect': data.get('dialect'),
+                        'total_objects': data.get('total_objects', 0),
+                        'processed_objects': data.get('processed_objects', 0),
+                        'timestamp': data.get('timestamp'),
+                        'status': data.get('status'),
+                        'progress': f"{data.get('processed_objects', 0)}/{data.get('total_objects', 0)}",
                         'checkpoint_file': str(checkpoint_file)
                     })
             except Exception as e:

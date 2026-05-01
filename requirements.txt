@@ -1,0 +1,21 @@
+# SQL Splitter 依赖列表
+# Python 标准库依赖（无需安装）
+# - json
+# - pathlib
+# - typing
+# - datetime
+# - dataclasses
+# - hashlib
+# - re
+# - os
+# - sys
+# - logging
+# - argparse
+# - copy
+
+# 第三方依赖（如果需要）
+# 当前版本仅使用 Python 标准库，无需额外安装
+
+# 可选依赖（用于测试）
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
