@@ -75,9 +75,10 @@ END
 GO"""
         result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
         self.assertIn('CREATE OR REPLACE PROCEDURE', result.converted)
-        self.assertIn('IS', result.converted)
+        self.assertIn('AS', result.converted)
+        self.assertNotIn(' IS', result.converted)  # 达梦存储过程用AS而非IS
         self.assertIn('p1 INTEGER', result.converted)
-        self.assertIn('p2 VARCHAR(100)', result.converted)
+        self.assertIn('p2 VARCHAR(100 CHAR)', result.converted)
         self.assertNotIn('@p1', result.converted)
         self.assertNotIn('@p2', result.converted)
 
@@ -90,7 +91,7 @@ BEGIN
 END
 GO"""
         result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
-        self.assertIn('CREATE OR REPLACE PROCEDURE sp_simple IS', result.converted)
+        self.assertIn('CREATE OR REPLACE PROCEDURE sp_simple AS', result.converted)
 
     def test_procedure_terminator(self):
         """存储过程添加终止符 /"""
@@ -135,7 +136,7 @@ END
 GO"""
         result = convert_sqlserver_to_dm_with_result(sql, 'function')
         self.assertIn('CREATE OR REPLACE FUNCTION', result.converted)
-        self.assertIn('RETURN VARCHAR', result.converted)
+        self.assertIn('RETURN VARCHAR(50 CHAR)', result.converted)
         self.assertIn('IS', result.converted)
 
 
@@ -256,10 +257,9 @@ class TestSetStatements(unittest.TestCase):
     """SET语句转换测试"""
 
     def test_set_nocount_on(self):
-        """SET NOCOUNT ON -> 注释"""
+        """SET NOCOUNT ON -> 删除(达梦不需要)"""
         result = convert_sqlserver_to_dm_with_result('SET NOCOUNT ON', 'generic')
-        self.assertIn('--', result.converted)
-        self.assertIn('达梦不需要', result.converted)
+        self.assertNotIn('SET NOCOUNT', result.converted)
 
 
 class TestConversionResult(unittest.TestCase):
@@ -525,6 +525,60 @@ END"""
         result = convert_sqlserver_to_dm_with_result(sql, 'generic')
         self.assertIn('LISTAGG', result.converted)
         self.assertNotIn('STRING_AGG', result.converted)
+
+
+class TestProcedureTypeMapping(unittest.TestCase):
+    """存储过程类型映射增强测试: VARCHAR(n CHAR) + CAST中nvarchar映射"""
+
+    def test_procedure_varchar_char_semantic(self):
+        """存储过程中DECLARE变量VARCHAR(n)应加CHAR语义"""
+        sql = """CREATE PROCEDURE sp_varchar_test(@p1 INT)
+AS
+BEGIN
+    DECLARE @v_sql VARCHAR(4000)
+    SET @v_sql = 'test'
+END
+GO"""
+        result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
+        self.assertIn('v_sql VARCHAR(4000 CHAR)', result.converted)
+        self.assertNotIn('v_sql VARCHAR(4000);', result.converted)
+
+    def test_procedure_cast_nvarchar(self):
+        """存储过程中CAST(xxx AS nvarchar(50))应映射为VARCHAR(50 CHAR)"""
+        sql = """CREATE PROCEDURE sp_cast_test(@TX_DATE INT)
+AS
+BEGIN
+    DECLARE @v_month VARCHAR(6)
+    SET @v_month = CAST(@TX_DATE AS nvarchar(6))
+END
+GO"""
+        result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
+        self.assertIn('VARCHAR(6 CHAR)', result.converted)
+        # nvarchar应被映射为VARCHAR
+        self.assertNotIn('nvarchar', result.converted)
+
+    def test_procedure_parameter_varchar_char(self):
+        """存储过程参数中的VARCHAR(n)也应加CHAR语义"""
+        sql = """CREATE PROCEDURE sp_param_test(@name VARCHAR(100), @id INT)
+AS
+BEGIN
+    SELECT @id
+END
+GO"""
+        result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
+        self.assertIn('name VARCHAR(100 CHAR)', result.converted)
+
+    def test_function_returns_varchar_char(self):
+        """函数RETURNS VARCHAR(n)也应加CHAR语义"""
+        sql = """CREATE FUNCTION fn_test(@val INT)
+RETURNS VARCHAR(50)
+AS
+BEGIN
+    RETURN 'ok'
+END
+GO"""
+        result = convert_sqlserver_to_dm_with_result(sql, 'function')
+        self.assertIn('VARCHAR(50 CHAR)', result.converted)
 
 
 if __name__ == '__main__':

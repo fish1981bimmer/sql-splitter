@@ -163,6 +163,7 @@ TYPE_MAPPINGS = {
     'time': 'TIME',
     'char': 'CHAR',
     'varchar': 'VARCHAR',
+    'varchar2': 'VARCHAR2',
     'text': 'TEXT',
     'nchar': 'CHAR',
     'nvarchar': 'VARCHAR',
@@ -301,15 +302,13 @@ class DMConverter:
         # 在还原后做，此时能看到真实的字符串字面量
         result = self._convert_string_concat(result)
 
-        # Step 6.7: 表/视图数据类型后处理
+        # Step 6.7: 方括号替换 + 类型映射 + dbo前缀替换（所有对象类型）
         # 在token还原后做，此时能看到真实类型名如[nvarchar]、[int]等
-        # dbo替换也在此方法内完成
         if ctype in (ConversionType.TABLE, ConversionType.VIEW):
             result = self._post_convert_table_types(result)
-        elif self._schema_prefix:
-            # Step 6.8: dbo前缀替换(对非表/视图对象类型生效)
-            # 存储过程/函数中的 dbo.sp_name -> schema.sp_name 等
-            result = self._replace_dbo_prefix(result)
+        else:
+            # 非表/视图也需要: 方括号→双引号 + 类型映射 + dbo替换
+            result = self._post_convert_generic_types(result)
 
         # Step 7: IF/WHILE控制流转换(在还原后做，需要看到真实文本)
         result = self._convert_if_else(result)
@@ -387,7 +386,9 @@ class DMConverter:
         """存储过程特定转换"""
         # SQL Server存储过程参数无括号: CREATE PROC name @p1 INT, @p2 VARCHAR(100) AS
         # 也有带括号的写法: CREATE PROC name(@p1 INT, @p2 VARCHAR(100)) AS
-        # -> CREATE OR REPLACE PROCEDURE name (p1 INT, p2 VARCHAR(100)) IS
+        # 也可能是: CREATE OR REPLACE PROC name @p1 INT AS (拆分阶段已加OR REPLACE)
+        # -> CREATE OR REPLACE PROCEDURE name (p1 INT, p2 VARCHAR(100)) AS
+        # 注意: 达梦存储过程用AS，函数用IS
 
         # 有括号的参数列表（兼容写法）
         def _format_bracket_params(m):
@@ -395,10 +396,10 @@ class DMConverter:
             params = m.group(2)  # 包含括号
             # 去掉@前缀
             params = re.sub(r'@(\w+)', r'\1', params)
-            return f"CREATE OR REPLACE PROCEDURE {name} {params} IS"
+            return f"CREATE OR REPLACE PROCEDURE {name} {params} AS"
 
         tokens = re.sub(
-            r'CREATE\s+PROC(?:EDURE)?\s+([\w.]+)\s*(\([^)]*(?:\([^)]*\)[^)]*)*\))\s*AS\b',
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s*(\([^)]*(?:\([^)]*\)[^)]*)*\))\s*AS\b',
             _format_bracket_params,
             tokens,
             flags=re.IGNORECASE | re.DOTALL
@@ -414,12 +415,12 @@ class DMConverter:
             param_list = _split_args_by_comma(params_clean.strip())
             param_list = [p.strip() for p in param_list if p.strip()]
             if len(param_list) <= 1:
-                return f"CREATE OR REPLACE PROCEDURE {name} ({params_clean.strip()}) IS"
+                return f"CREATE OR REPLACE PROCEDURE {name} ({params_clean.strip()}) AS"
             formatted = '(\n' + ',\n'.join(f'    {p}' for p in param_list) + '\n)'
-            return f"CREATE OR REPLACE PROCEDURE {name} {formatted} IS"
+            return f"CREATE OR REPLACE PROCEDURE {name} {formatted} AS"
 
         tokens = re.sub(
-            r'CREATE\s+PROC(?:EDURE)?\s+([\w.]+)\s+(@[\s\S]+?)\s+AS\b',
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s+(@[\s\S]+?)\s+AS\b',
             _format_no_bracket_params,
             tokens,
             flags=re.IGNORECASE
@@ -427,15 +428,15 @@ class DMConverter:
 
         # 无参数的存储过程
         tokens = re.sub(
-            r'CREATE\s+PROC(?:EDURE)?\s+([\w.]+)\s+AS\b',
-            r'CREATE OR REPLACE PROCEDURE \1 IS',
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s+AS\b',
+            r'CREATE OR REPLACE PROCEDURE \1 AS',
             tokens,
             flags=re.IGNORECASE
         )
         # GO 分隔符 -> /
-        tokens = re.sub(r'^\s*GO\s*$', '/', tokens, flags=re.MULTILINE | re.IGNORECASE)
+        tokens = re.sub(r'^\s*GO\s*;?\s*$', '/', tokens, flags=re.MULTILINE | re.IGNORECASE)
 
-        self._add_change({'type': 'procedure', 'line': 0, 'old': 'CREATE PROCEDURE', 'new': 'CREATE OR REPLACE PROCEDURE ... IS', 'desc': '存储过程声明语法'})
+        self._add_change({'type': 'procedure', 'line': 0, 'old': 'CREATE PROCEDURE', 'new': 'CREATE OR REPLACE PROCEDURE ... AS', 'desc': '存储过程声明语法'})
         return tokens
 
     def _convert_function(self, tokens: str) -> str:
@@ -443,7 +444,7 @@ class DMConverter:
         # CREATE FUNCTION name(@p1 INT) RETURNS INT AS
         # -> CREATE OR REPLACE FUNCTION name(p1 INT) RETURN INT IS
         tokens = re.sub(
-            r'CREATE\s+FUNCTION\s+([\w.]+)\s*\(([^)]*)\)\s*RETURNS\s+(\w+(?:\s*\([^)]*\))?)\s*AS\b',
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(.+?)\s*\(([^)]*)\)\s*RETURNS\s+(\w+(?:\s*\([^)]*\))?)\s*AS\b',
             r'CREATE OR REPLACE FUNCTION \1 (\2) RETURN \3 IS',
             tokens,
             flags=re.IGNORECASE
@@ -455,8 +456,8 @@ class DMConverter:
             tokens,
             flags=re.IGNORECASE
         )
-        # GO -> /
-        tokens = re.sub(r'^\s*GO\s*$', '/', tokens, flags=re.MULTILINE | re.IGNORECASE)
+        # GO/GO; -> /
+        tokens = re.sub(r'^\s*GO\s*;?\s*$', '/', tokens, flags=re.MULTILINE | re.IGNORECASE)
 
         self._add_change({'type': 'function', 'line': 0, 'old': 'CREATE FUNCTION', 'new': 'CREATE OR REPLACE FUNCTION ... IS', 'desc': '函数声明语法'})
         return tokens
@@ -591,10 +592,10 @@ class DMConverter:
             base_type = bare_type.lower().strip()
             if base_type in TYPE_MAPPINGS:
                 new_type = TYPE_MAPPINGS[base_type]
-                # varchar(max) / nvarchar(max) -> TEXT
-                if base_type in ('varchar', 'nvarchar') and '(max)' in suffix.lower():
-                    new_type = 'TEXT'
-                    suffix = ''
+                # varchar(max) / nvarchar(max) / varchar2(max) -> VARCHAR(4096 CHAR) / VARCHAR2(4096 CHAR)
+                if base_type in ('varchar', 'nvarchar', 'varchar2') and '(max)' in suffix.lower():
+                    new_type = 'VARCHAR2' if base_type == 'varchar2' else 'VARCHAR'
+                    suffix = '(4096 CHAR)'
                 new_result = f"{prefix}{col_name} {new_type}{suffix}"
                 if new_result != m.group(0):
                     self._add_change({
@@ -610,7 +611,7 @@ class DMConverter:
         # 前缀包括: , ( DECLARE 换行
         # 类型名支持裸名(int)和方括号包裹([int])
         tokens = re.sub(
-            r'([,\(]\s*|DECLARE\s+|\n\s*)([\w@]+)\s+(\[?(' + _FULL_TYPE_NAMES_PATTERN + r')\]?)(\([^)]*(?:\([^)]*\)[^]]*)*\))?',
+            r'([,\(]\s*|DECLARE\s+|\n\s*)([\w@]+)\s+(\[?(?:' + _FULL_TYPE_NAMES_PATTERN + r')\]?)(\([^)]*(?:\([^)]*\)[^)]*)*\))?',
             _replace_type,
             tokens,
             flags=re.IGNORECASE
@@ -1007,8 +1008,8 @@ class DMConverter:
     def _convert_statements(self, tokens: str) -> str:
         """语句级转换"""
         statement_mappings = {
-            'SET NOCOUNT ON': '-- SET NOCOUNT ON (达梦不需要)',
-            'SET NOCOUNT OFF': '-- SET NOCOUNT OFF (达梦不需要)',
+            'SET NOCOUNT ON': '',
+            'SET NOCOUNT OFF': '',
             'SET XACT_ABORT ON': '-- SET XACT_ABORT ON (达梦不需要)',
             'SET ANSI_NULLS ON': '-- SET ANSI_NULLS ON (达梦不需要)',
             'SET ANSI_NULLS OFF': '-- SET ANSI_NULLS OFF (达梦不需要)',
@@ -1019,8 +1020,12 @@ class DMConverter:
             'SET CONCAT_NULL_YIELDS_NULL ON': '-- SET CONCAT_NULL_YIELDS_NULL ON (达梦不需要)',
         }
         for old_stmt, new_stmt in statement_mappings.items():
-            pattern = r'^\s*' + re.escape(old_stmt) + r'\s*$'
-            new_tokens = re.sub(pattern, new_stmt, tokens, flags=re.MULTILINE | re.IGNORECASE)
+            pattern = r'^\s*' + re.escape(old_stmt) + r'\s*;?\s*\n?'
+            if new_stmt:
+                replacement = new_stmt + '\n'
+            else:
+                replacement = ''
+            new_tokens = re.sub(pattern, replacement, tokens, flags=re.MULTILINE | re.IGNORECASE)
             if new_tokens != tokens:
                 self._add_change({'type': 'statement', 'line': 0, 'old': old_stmt, 'new': new_stmt, 'desc': '语句映射'})
                 tokens = new_tokens
@@ -1356,9 +1361,9 @@ class DMConverter:
             base_type = type_name.lower().strip()
             mapped = TYPE_MAPPINGS.get(base_type, type_name)
             sfx = suffix or ''
-            if base_type in ('varchar', 'nvarchar') and '(max)' in sfx.lower():
-                mapped = 'TEXT'
-                sfx = ''
+            if base_type in ('varchar', 'nvarchar', 'varchar2') and '(max)' in sfx.lower():
+                mapped = 'VARCHAR2' if base_type == 'varchar2' else 'VARCHAR'
+                sfx = '(4096 CHAR)'
             # 记录变量名
             self._declared_vars.add(var_name.lower())
             # 变量加v_前缀(达梦规范), 如果原名已有v_前缀则不重复添加
@@ -1671,11 +1676,17 @@ class DMConverter:
     # ================================================================
 
     def _replace_dbo_prefix(self, content: str) -> str:
-        """替换dbo前缀 — 所有对象类型通用
+        """替换dbo前缀 + 双点号 — 所有对象类型通用
         xxx.dbo.yyy -> xxx.yyy (去掉中间的dbo)
         dbo.yyy -> {schema_prefix}.yyy (用schema_prefix替换dbo)
+        xxx..yyy -> xxx.yyy (SQL Server的database..object省略schema写法)
+        \"xxx\"..\"yyy\" -> \"xxx\".\"yyy\" (双引号格式的双点号)
         """
         prefix = self._schema_prefix
+        # 双点号: xxx..yyy -> xxx.yyy (SQL Server省略dbo的写法，达梦不支持)
+        # 必须在三段式之前处理，否则 xxx..yyy 中的 .. 不会被 xxx.dbo.yyy 正则匹配
+        content = re.sub(r'"([^"]+)"\.\.', r'"\1".', content, flags=re.IGNORECASE)  # "xxx".."yyy"
+        content = re.sub(r'\b(\w+)\.\.', r'\1.', content, flags=re.IGNORECASE)  # xxx..yyy
         # 三段式: "xxx"."dbo"."yyy" -> "xxx"."yyy"
         content = re.sub(r'"([^"]+)"\."dbo"\.', r'"\1".', content, flags=re.IGNORECASE)
         # 三段式无引号: xxx.dbo.yyy -> xxx.yyy
@@ -1734,6 +1745,48 @@ class DMConverter:
 
         # GO; -> /
         content = re.sub(r'^\s*GO\s*;\s*$', '/', content, flags=re.MULTILINE | re.IGNORECASE)
+
+        return content
+
+    def _post_convert_generic_types(self, content):
+        """非表/视图对象(存储过程/函数/触发器等)的方括号+类型映射+dbo替换
+        与 _post_convert_table_types 类似但:
+        - 不去 ON [PRIMARY] (过程体内没有)
+        - 仍然做: 方括号类型映射 + [xxx]->"xxx" + dbo替换 + VARCHAR(n CHAR)
+        """
+        # 数据类型映射 - 方括号包裹的类型名先映射
+        _type_map = TYPE_MAPPINGS
+        _bracket_type_pattern = re.compile(
+            r'\[(' + '|'.join(re.escape(t) for t in _type_map.keys()) + r')\](?=\s*\(|\s+NULL|\s+NOT|\s+IDENTITY|\s+DEFAULT|\s+,|\s*\)|\s*$)',
+            re.IGNORECASE
+        )
+        # 裸类型名也映射（如 CAST(... AS nvarchar(50)) 中的 nvarchar）
+        _bare_type_pattern = re.compile(
+            r'(?<=\s)(' + '|'.join(re.escape(t) for t in _type_map.keys()) + r')(?=\s*\(|\s+NULL|\s+NOT|\s+IDENTITY|\s+DEFAULT|\s+,|\s*\)|\s*$)',
+            re.IGNORECASE
+        )
+        def _type_replacer(m):
+            return _type_map[m.group(1).lower()]
+        content = _bracket_type_pattern.sub(_type_replacer, content)
+        content = _bare_type_pattern.sub(_type_replacer, content)
+
+        # 方括号标识符 -> 双引号（达梦风格）
+        content = re.sub(r'\[([^\]]+)\]', r'"\1"', content)
+
+        # dbo前缀替换
+        content = self._replace_dbo_prefix(content)
+
+        # VARCHAR(n) -> VARCHAR(n CHAR) (达梦要求显式指定char语义)
+        # 存储过程中变量声明和CAST中的VARCHAR也需要加CHAR语义
+        content = re.sub(
+            r'\bVARCHAR\s*\(\s*(\d+)\s*\)',
+            r'VARCHAR(\1 CHAR)',
+            content,
+            flags=re.IGNORECASE
+        )
+
+        # GO -> /
+        content = re.sub(r'^\s*GO\s*$', '/', content, flags=re.MULTILINE | re.IGNORECASE)
 
         return content
 
