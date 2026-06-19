@@ -3,12 +3,20 @@ name: sql-splitter
 description: 拆分 SQL 文件为独立文件（存储过程、函数、视图、触发器、表结构、索引、约束），自动分析依赖并生成合并脚本
 ---
 
-# SQL 文件拆分工具 v3.2.4
+# SQL 文件拆分工具 v3.3.0
 
 将包含多个 SQL 对象的单一文件或目录拆分为独立的 .sql 文件，
 并自动分析对象间依赖关系，生成按依赖排序的合并脚本。
 
-## v3.2.x 新功能 — 存储过程PROCEDURE用AS + VARCHAR(n CHAR)对PROC生效 + CAST中nvarchar映射
+## v3.3.0 新功能 — PROCEDURE双重引号修复 + IDENTITY位置修正 + 临时表正则修复 + token碰撞修复
+
+- **存储过程PROCEDURE双重引号bug修复** — 之前三个正则顺序执行，第一个替换`PROCEDURE sp_test(...)` 后输出 `"sp_test"`，第三个又匹配到已替换的结果再包引号变成 `""sp_test""` 。修复：合并为一个正则+分支回调，确保每个存储过程声明只被匹配和替换一次
+- **IDENTITY自增列位置修正** — 之前 `IDENTITY("id",1,1)` 被插在表定义的 `)` 前面，达梦语法要求紧跟 `)` 后面。修复：优先匹配独占一行的 `)` ，也兼容单行写法 `(id INT IDENTITY(1,1) NOT NULL)`
+- **#临时表正则修复** — 之前 `[^]]*` 匹配到 `NVARCHAR(100)` 的 `)` 就截断，导致临时表列定义不完整。修复：改用贪婪 `(.+)` + `re.DOTALL` 匹配到最后一个 `)` 。同时修复 `##` 全局临时表先被替换为 `#tmp_` 的bug
+- **token_map碰撞修复** — Step3重新tokenize时counter从0开始，`"v_users"` 新占位符覆盖了 `'N/A'` 原占位符，导致字符串被替换为标识符。修复：新增 `start_counter` 参数，Step3从原最大key+1开始编号
+- **44个单元测试全部通过**
+
+## v3.2.x 功能 — PROCEDURE用AS + VARCHAR(n CHAR)对PROC生效 + CAST中nvarchar映射
 
 - **存储过程PROCEDURE用AS而非IS(v3.2.3)** — 达梦存储过程声明用`AS`，函数用`IS`，之前PROCEDURE错误用了Oracle风格的`IS`。**关键区分：PROCEDURE→AS，FUNCTION→IS**
 - **存储过程VARCHAR(n)加CHAR语义(v3.2.2)** — DECLARE变量和参数中的`VARCHAR(n)` → `VARCHAR(n CHAR)`，与TABLE转换一致
@@ -168,6 +176,11 @@ input_split_dm/ ← 达梦转换版本
 - **嵌套括号**: `VARCHAR(100)`中的`)`会截断`[^)]*`，参数列表匹配需用`(\([^)]*(?:\([^)]*\)[^)]*)*\))`匹配嵌套
 - **数据类型上下文**: 前缀需包含`DECLARE\s+`，否则`DECLARE @v DATETIME`中的DATETIME不会被转换
 - **INSERT INTO误匹配**: `INSERT INT`被匹配为前缀`\n`+列名`INSERT`+类型`INT`，需在数据类型替换中排除SQL关键字作为列名
+- **⚠️ 多正则顺序执行重复匹配陷阱(v3.3.0修复)**: `_convert_procedure`中三个re.sub顺序处理同类模式(有括号参数/无括号参数/无参数存储过程)，第一个替换后的结果被后续正则再次匹配，导致引号叠加`""sp_test""`。**绝不可用多个re.sub顺序处理同一token的不同形式**——必须用单一正则+分支回调，确保每个模式只被匹配一次。详见 [v3.3.0修复记录](references/dm-converter-v330-fixes.md)
+- **⚠️ IDENTITY插入位置陷阱(v3.3.0修复)**: SQL中`)`出现在很多上下文(列类型`VARCHAR(100)`、函数调用、表定义结束)。匹配表结束的`)`必须用上下文锚定(独占一行`^(\s*)\)(\s*$)`或紧跟`;`/换行)，不能简单匹配第一个`)后行尾`——会匹配到列定义中的嵌套`)`。详见 [v3.3.0修复记录](references/dm-converter-v330-fixes.md)
+- **⚠️ token_map占位符key碰撞(v3.3.0修复)**: Step3重新tokenize时counter从0开始，新占位符`__TOKEN_0__`覆盖了Step1中同key的原始内容，导致字符串`'N/A'`被还原为标识符`"v_users"`。修复：`_tokenize`新增`start_counter`参数，Step3传入`max(已存在key)+1`。**任何生成占位符的系统重新运行时，必须从已存在key的最大值+1开始**。详见 [v3.3.0修复记录](references/dm-converter-v330-fixes.md)
+- **⚠️ _quote_name先split再去方括号(v3.3.0修复)**: `_quote_name`先检查整体`[...body...]`格式，但`[dbo].[PROC_xxx]`以`[`开头`]`结尾被误当成单个方括号标识符，去首尾后变成`dbo].[PROC_xxx`。**当输入可能是schema.name格式时，必须先split('.')再逐段去方括号/引号**，绝不能先对整体做去除外层处理。详见 [v3.3.0修复记录](references/dm-converter-v330-fixes.md)
+- **⚠️ ##双#临时表替换顺序(v3.3.0修复)**: `re.sub(r'#(\w+)', ...)`会把`##GlobalTemp`变成`#tmp_GlobalTemp`(只替换了第二个#)。必须**先替换`##`→`gtmp_`，再替换`#`→`tmp_`**。详见 [v3.3.0修复记录](references/dm-converter-v330-fixes.md)
 - **⚠️ patch工具缩进陷阱（严重，已反复触发）**: patch工具修改Python缩进时极易出错：(1) else块内代码被放到块外 (2) if子块和if本身同缩进 (3) 修复脚本的缩进也可能不对（17空格vs16空格的1位偏差导致整个if块变成else子块）。**终极方案：涉及Python方法体修改时，不要用patch，用Python脚本替换整个方法（find方法定义起始→find return content结束→拼接新方法体）。每次修改后必须用`python3 -m py_compile file.py`验证。仅靠lint不够——py_compile才能发现缩进导致的SyntaxError/IndentationError**。详见 [v2.4.5设计记录](references/dm-converter-v245-bracket-dbo-split.md)
 - **⚠️ Python缓存陷阱**: 修改.py后pytest可能运行旧的`__pycache__/*.pyc`。修改后必须`find . -name '*.pyc' -delete`或`PYTHONDONTWRITEBYTECODE=1 python3 -m pytest ...`。否则改了代码但测试结果不变，误导调试方向
 - **⚠️ write_file不能写代码文件**: Hermes的write_file工具会给内容添加`NNN|`行号前缀，导致Python文件损坏。**代码文件只能用patch工具或terminal的python脚本修改**。详见 [v2.4.3修复记录](references/dm-converter-v243-fixes.md)
@@ -180,6 +193,8 @@ input_split_dm/ ← 达梦转换版本
 - **⚠️ 存储过程PROCEDURE必须用AS而非IS(v3.2.3修复)**: 达梦存储过程声明语法是`CREATE OR REPLACE PROCEDURE name AS`，函数才是`CREATE OR REPLACE FUNCTION name IS`。之前的`_convert_procedure`方法错误地硬编码了`IS`（Oracle风格的PROCEDURE语法），导致47个存储过程文件全部用了IS。这源于Oracle和达梦在PROCEDURE声明上的语法差异——Oracle的PROCEDURE可以用IS，但达梦要求用AS。**关键区分：PROCEDURE→AS，FUNCTION→IS**
 - **⚠️ SET NOCOUNT ON/OFF带分号不匹配(v3.2.1修复)**: `_convert_statements`正则`^\s*SET NOCOUNT ON\s*$`不匹配`SET NOCOUNT ON;`（行末带分号），导致过程体内部的SET NOCOUNT ON未被转换。修复：正则加`\s*;?`兼容分号。同时用户要求**直接删除**而非注释保留，所以`SET NOCOUNT ON`/`SET NOCOUNT OFF`映射为空字符串，正则加`\n?`吃掉换行不留空行
 - **⚠️ SET NOCOUNT ON 在过程体内部不转换**: 转换器只处理紧跟 `AS` 后的 `SET NOCOUNT ON`（转为注释）。如果 `SET NOCOUNT ON` 出现在过程体中间（如第7行），不会被转换，残留到输出中。达梦不支持该语句，需手动注释或删除。实测462对象中2个存此问题（0.43%），属已知边界case
+- **⚠️ git push分支对齐**: 本地git可能在`master`分支提交，但GitHub仓库HEAD分支可能是`main`。push到`master`不更新GitHub默认展示的`main`分支，导致网页看不到最新代码。修正：`git remote show origin`确认HEAD分支 → `git checkout main && git merge master && git push origin main`
+- **⚠️ GitHub API上传大文件超时**: dm_converter.py(88KB+)通过GitHub Contents API上传时，base64后请求体巨大，curl经常超时(300s+)。**推荐方式**：直接`git add && git commit && git push`，比API逐文件PUT快得多且更可靠。之前memory记录"api.github.com可达但github.com被墙"已过时——2026-06-14实测git push可正常工作。仅在git push完全不通时才fallback到API上传
 - **⚠️ UTF-16编码SQL文件**: SSMS导出的SQL脚本常为UTF-16编码(带BOM)，拆分前必须先转UTF-8，否则内容被当成二进制乱码。转换命令: `python3 -c "open('out.sql','w',encoding='utf-8').write(open('in.sql',encoding='utf-16').read())"` 详见 [v3.0修复与UTF-16转换记录](references/dm-converter-v30-fixes.md)
 - **⚠️ DATE类型映射重复陷阱**: 当存储过程参数类型为`DATE`时（无方括号包裹），detokenize的类型映射可能在Step4已经替换过一次`DATE→DATE`（因为DATE在达梦也是合法类型名），但如果正则边界不够精确，会把`DATE`后面的换行/空白也吃进去，导致相邻关键字拼接，如`DATE\nAS`变成`DATEDATE\nAS`或`DATEDATEAS`。根因：类型映射正则的后缀锚点需用`\b`或`(?=\s|,|\)|$)`精确截断，不能贪婪吃进换行符。**每次修改类型映射正则后，必须跑`test_dm_converter.py`验证**
 - **⚠️ dbo前缀正则陷阱**: detokenize后方括号变成双引号，正则必须同时匹配`"dbo".`和`dbo.`两种格式。三段式必须在两段式之前处理，否则`schema.dbo.object`中的`dbo.object`先被两段式误匹配。详见 [v2.4.5设计记录](references/dm-converter-v245-bracket-dbo-split.md)
@@ -198,6 +213,18 @@ python3 -m pytest test_dm_converter.py -v
 clawhub publish /Users/a1234/.hermes/skills/sql-splitter --slug sql-splitter --version X.Y.Z
 # 错误: clawhub publish .  → "Error: SKILL.md required" (即使SKILL.md明明存在)
 # 正确: clawhub publish /absolute/path/to/skill-dir
+# ⚠️ 版本号冲突：如果同名版本已发布，clawhub会报"Version X.Y.Z already exists"，必须升版本号(如3.2.2→3.2.3)重新发布，不能覆盖
+```
+
+### 发布到 GitHub
+
+```bash
+cd /Users/a1234/.hermes/skills/sql-splitter
+git add -A && git commit -m "vX.Y.Z: 变更说明"
+# ⚠️ 确认远程主分支名！git remote show origin 查看HEAD branch
+# 如果远程HEAD是main但本地在master上提交，push到master不会更新GitHub默认展示的main
+# 修正: git checkout main && git merge master && git push origin main
+git push origin main
 ```
 
 ## 支持的 SQL 方言
@@ -454,6 +481,7 @@ sql-splitter/
 │   ├── dm-converter-v30-fixes.md ← v3.0 修复记录（含HRBI_Stage真实项目验证）
 │   ├── dm-converter-v322-fixes.md ← v3.2.2 修复记录（PROC VARCHAR CHAR + CAST nvarchar映射）
 │   ├── dm-converter-v323-fixes.md ← v3.2.3 修复记录（PROCEDURE用AS而非IS）
+│   ├── dm-converter-v330-fixes.md ← v3.3.0 修复记录（双重引号+IDENTITY位置+临时表正则+token碰撞+quote_name）
 │   └── dm-converter-v245-bracket-dbo-split.md ← v2.4.5 方括号+dbo设计记录
 └── scripts/
     ├── common.py ← 共享模块（枚举、常量、工具函数）
@@ -675,6 +703,12 @@ DELIMITER ;
 - **clawhub版本号冲突时**：发布后如果又改了内容，必须升版本号（如3.2.2→3.2.3）重新发布，clawhub不允许覆盖已发布版本
 
 ## 更新日志
+
+### v3.3.0 (2026-06-19)
+- **PROCEDURE双重引号bug修复** — 三个顺序正则导致已替换结果被再次匹配，引号叠加成`""sp_test""`。合并为单一正则+分支回调
+- **IDENTITY位置修正** — `IDENTITY("id",1,1)` 从`)`前移到`)`后，符合达梦语法。同时兼容单行和多行表定义
+- **#临时表正则修复** — 列定义中的`)`截断匹配，改用贪婪匹配。`##`全局临时表不再被替换为`#tmp_`
+- **token_map碰撞修复** — Step3重新tokenize占位符key覆盖原key，字符串`'N/A'`变成标识符`"v_users"`。新增`start_counter`参数避免碰撞
 
 ### v3.2.4 (2026-06-14)
 - **更新日志排序修正** — 所有版本严格按版本号降序排列(之前v2.5.0/v2.4.x/v3.0.0交叉混乱)

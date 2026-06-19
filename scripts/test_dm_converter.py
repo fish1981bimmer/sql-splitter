@@ -91,7 +91,7 @@ BEGIN
 END
 GO"""
         result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
-        self.assertIn('CREATE OR REPLACE PROCEDURE sp_simple AS', result.converted)
+        self.assertIn('CREATE OR REPLACE PROCEDURE "sp_simple" AS', result.converted)
 
     def test_procedure_terminator(self):
         """存储过程添加终止符 /"""
@@ -178,7 +178,7 @@ class TestTableConversion(unittest.TestCase):
         """IDENTITY保留"""
         sql = "CREATE TABLE t (id INT IDENTITY(1,1) NOT NULL)"
         result = convert_sqlserver_to_dm_with_result(sql, 'table')
-        self.assertIn('IDENTITY(1, 1)', result.converted)
+        self.assertIn('IDENTITY("id", 1, 1)', result.converted)
         self.assertIn('INTEGER', result.converted)
 
     def test_insert_into_not_modified(self):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-达梦数据库转换器 v3.0
+达梦数据库转换器 v3.3.0
 将 SQL Server 语法转换为达梦数据库语法
 
 v3.0 重写改进:
@@ -213,6 +213,38 @@ class DMConverter:
         self._change_set: set = set() # 去重
         self._schema_prefix: str = ''  # dbo替换前缀
 
+    @staticmethod
+    def _quote_name(name: str) -> str:
+        """对象名加双引号辅助方法
+        处理 schema.name 格式 -> schema"."name (外部调用方包裹双引号)
+        处理已经是双引号的 -> 去掉外层引号重新处理
+        处理方括号 [name] -> name
+        """
+        name = name.strip()
+        # 处理schema.name格式: [dbo].[xxx] -> dbo"."xxx 或 hrbi_stage.Users
+        # 必须先拆分再逐段去方括号，否则[dbo].[xxx]整体被误当成单个方括号标识符
+        if '.' in name:
+            parts = name.split('.')
+            cleaned = []
+            for p in parts:
+                p = p.strip()
+                # 去掉方括号
+                if p.startswith('[') and p.endswith(']'):
+                    p = p[1:-1]
+                # 去掉双引号
+                if p.startswith('"') and p.endswith('"'):
+                    p = p[1:-1]
+                cleaned.append(p)
+            return '"."'.join(cleaned)
+        # 单段名字: 去掉方括号
+        if name.startswith('[') and name.endswith(']'):
+            name = name[1:-1]
+        # 如果已经双引号包裹,先去掉
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1]
+        return name
+
+
     def _add_change(self, change: Dict):
         """添加变更记录(去重)"""
         key = (change.get('type', ''), change.get('old', ''), change.get('new', ''))
@@ -265,7 +297,12 @@ class DMConverter:
             result = self._convert_sequence(result)
 
         # Step 3: 重新tokenize + 合并token_map
-        result, new_token_map = self._tokenize(result)
+        # 使用start_counter避免和original_token_map的key碰撞
+        def _extract_token_num(key):
+            m = re.match(r'__TOKEN_(\d+)__', key)
+            return int(m.group(1)) if m else -1
+        max_key = max((_extract_token_num(k) for k in original_token_map), default=-1)
+        result, new_token_map = self._tokenize(result, start_counter=max_key + 1)
         merged_map = dict(original_token_map)
         merged_map.update(new_token_map)
 
@@ -328,10 +365,10 @@ class DMConverter:
     # Token化 - 保护字符串和注释不被误替换
     # ================================================================
 
-    def _tokenize(self, content: str) -> Tuple[str, Dict[str, str]]:
+    def _tokenize(self, content: str, start_counter: int = 0) -> Tuple[str, Dict[str, str]]:
         """将字符串字面量和注释替换为占位符"""
         token_map = {}
-        counter = [0]
+        counter = [start_counter]
 
         def _replace(m):
             key = f"__TOKEN_{counter[0]}__"
@@ -389,50 +426,46 @@ class DMConverter:
         # 也可能是: CREATE OR REPLACE PROC name @p1 INT AS (拆分阶段已加OR REPLACE)
         # -> CREATE OR REPLACE PROCEDURE name (p1 INT, p2 VARCHAR(100)) AS
         # 注意: 达梦存储过程用AS，函数用IS
+        #
+        # 重要: 用单一正则+分支回调，避免三个正则顺序执行时
+        # 第一个替换后的结果被后续正则再次匹配导致引号叠加
 
-        # 有括号的参数列表（兼容写法）
-        def _format_bracket_params(m):
-            name = m.group(1)
-            params = m.group(2)  # 包含括号
-            # 去掉@前缀
-            params = re.sub(r'@(\w+)', r'\1', params)
-            return f"CREATE OR REPLACE PROCEDURE {name} {params} AS"
-
-        tokens = re.sub(
-            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s*(\([^)]*(?:\([^)]*\)[^)]*)*\))\s*AS\b',
-            _format_bracket_params,
-            tokens,
-            flags=re.IGNORECASE | re.DOTALL
+        # 统一正则: 识别三种参数形式(括号/无括号@参数/无参数)
+        # Group 1: name, Group 2: 括号参数(可选), Group 3: 无括号@参数(可选)
+        _PROC_PATTERN = (
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+'
+            r'(.+?)'  # group 1: name (non-greedy)
+            r'(?:'
+            r'\s*(\([^)]*(?:\([^)]*\)[^)]*)*\))'  # group 2: 括号参数
+            r'|'
+            r'\s+(@[\s\S]+?)'  # group 3: 无括号@参数列表
+            r')?'
+            r'\s*AS\b'
         )
 
-        # 无括号的参数列表（SQL Server标准写法）
-        def _format_no_bracket_params(m):
-            name = m.group(1)
-            params_raw = m.group(2)  # @p1 INT, @p2 TYPE(18,2), @p3 INT
-            # 去掉@前缀, 规范化空白
-            params_clean = re.sub(r'@(\w+)', r'\1', params_raw)
-            # 按顶层逗号分割参数(忽略括号内的逗号), 每个参数缩进
-            param_list = _split_args_by_comma(params_clean.strip())
-            param_list = [p.strip() for p in param_list if p.strip()]
-            if len(param_list) <= 1:
-                return f"CREATE OR REPLACE PROCEDURE {name} ({params_clean.strip()}) AS"
-            formatted = '(\n' + ',\n'.join(f'    {p}' for p in param_list) + '\n)'
-            return f"CREATE OR REPLACE PROCEDURE {name} {formatted} AS"
+        def _format_proc(m):
+            name = m.group(1).strip()
+            bracket_params = m.group(2)  # 含括号 或 None
+            raw_params = m.group(3)      # @p1 INT, @p2 ... 或 None
 
-        tokens = re.sub(
-            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s+(@[\s\S]+?)\s+AS\b',
-            _format_no_bracket_params,
-            tokens,
-            flags=re.IGNORECASE
-        )
+            if bracket_params:
+                # 有括号的参数列表
+                params = re.sub(r'@(\w+)', r'\1', bracket_params)
+                return f'CREATE OR REPLACE PROCEDURE "{DMConverter._quote_name(name)}" {params} AS'
+            elif raw_params:
+                # 无括号参数列表（SQL Server标准写法）
+                params_clean = re.sub(r'@(\w+)', r'\1', raw_params)
+                param_list = _split_args_by_comma(params_clean.strip())
+                param_list = [p.strip() for p in param_list if p.strip()]
+                if len(param_list) <= 1:
+                    return f'CREATE OR REPLACE PROCEDURE "{DMConverter._quote_name(name)}" ({params_clean.strip()}) AS'
+                formatted = '(\n' + ',\n'.join(f'    {p}' for p in param_list) + '\n)'
+                return f'CREATE OR REPLACE PROCEDURE "{DMConverter._quote_name(name)}" {formatted} AS'
+            else:
+                # 无参数的存储过程
+                return f'CREATE OR REPLACE PROCEDURE "{DMConverter._quote_name(name)}" AS'
 
-        # 无参数的存储过程
-        tokens = re.sub(
-            r'CREATE\s+(?:OR\s+REPLACE\s+)?PROC(?:EDURE)?\s+(.+?)\s+AS\b',
-            r'CREATE OR REPLACE PROCEDURE \1 AS',
-            tokens,
-            flags=re.IGNORECASE
-        )
+        tokens = re.sub(_PROC_PATTERN, _format_proc, tokens, flags=re.IGNORECASE | re.DOTALL)
         # GO 分隔符 -> /
         tokens = re.sub(r'^\s*GO\s*;?\s*$', '/', tokens, flags=re.MULTILINE | re.IGNORECASE)
 
@@ -443,9 +476,14 @@ class DMConverter:
         """函数特定转换"""
         # CREATE FUNCTION name(@p1 INT) RETURNS INT AS
         # -> CREATE OR REPLACE FUNCTION name(p1 INT) RETURN INT IS
+        def _fmt_func(m):
+            name = m.group(1)
+            params = m.group(2)
+            ret_type = m.group(3)
+            return f'CREATE OR REPLACE FUNCTION "{DMConverter._quote_name(name)}" ({params}) RETURN {ret_type} IS'
         tokens = re.sub(
             r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(.+?)\s*\(([^)]*)\)\s*RETURNS\s+(\w+(?:\s*\([^)]*\))?)\s*AS\b',
-            r'CREATE OR REPLACE FUNCTION \1 (\2) RETURN \3 IS',
+            _fmt_func,
             tokens,
             flags=re.IGNORECASE
         )
@@ -464,9 +502,12 @@ class DMConverter:
 
     def _convert_view(self, tokens: str) -> str:
         """视图特定转换"""
+        def _fmt_view(m):
+            name = m.group(1)
+            return f'CREATE OR REPLACE VIEW "{DMConverter._quote_name(name)}" AS'
         tokens = re.sub(
             r'CREATE\s+VIEW\s+([\w.]+)\s+AS\b',
-            r'CREATE OR REPLACE VIEW \1 AS',
+            _fmt_view,
             tokens,
             flags=re.IGNORECASE
         )
@@ -481,23 +522,38 @@ class DMConverter:
     def _convert_trigger(self, tokens: str) -> str:
         """触发器特定转换"""
         # AFTER 触发器
+        def _fmt_trig_after(m):
+            name = m.group(1)
+            tbl = m.group(2)
+            events = m.group(3)
+            return f'CREATE OR REPLACE TRIGGER "{DMConverter._quote_name(name)}" AFTER {events} ON "{DMConverter._quote_name(tbl)}"'
         tokens = re.sub(
             r'CREATE\s+TRIGGER\s+([\w.]+)\s+ON\s+([\w.]+)\s+AFTER\s+([\w,\s]+?)(?:\s+AS\b|\s+FOR\s+EACH\s+ROW\b)',
-            r'CREATE OR REPLACE TRIGGER \1 AFTER \3 ON \2',
+            _fmt_trig_after,
             tokens,
             flags=re.IGNORECASE
         )
         # INSTEAD OF 触发器 -> BEFORE
+        def _fmt_trig_instead(m):
+            name = m.group(1)
+            tbl = m.group(2)
+            events = m.group(3)
+            return f'CREATE OR REPLACE TRIGGER "{DMConverter._quote_name(name)}" BEFORE {events} ON "{DMConverter._quote_name(tbl)}"'
         tokens = re.sub(
             r'CREATE\s+TRIGGER\s+([\w.]+)\s+ON\s+([\w.]+)\s+INSTEAD\s+OF\s+([\w,\s]+?)(?:\s+AS\b|\s+FOR\s+EACH\s+ROW\b)',
-            r'CREATE OR REPLACE TRIGGER \1 BEFORE \3 ON \2',
+            _fmt_trig_instead,
             tokens,
             flags=re.IGNORECASE
         )
         # FOR 触发器 (SQL Server 的 FOR 等同于 AFTER)
+        def _fmt_trig_for(m):
+            name = m.group(1)
+            tbl = m.group(2)
+            events = m.group(3)
+            return f'CREATE OR REPLACE TRIGGER "{DMConverter._quote_name(name)}" AFTER {events} ON "{DMConverter._quote_name(tbl)}"'
         tokens = re.sub(
             r'CREATE\s+TRIGGER\s+([\w.]+)\s+ON\s+([\w.]+)\s+FOR\s+([\w,\s]+?)(?:\s+AS\b|\s+FOR\s+EACH\s+ROW\b)',
-            r'CREATE OR REPLACE TRIGGER \1 AFTER \3 ON \2',
+            _fmt_trig_for,
             tokens,
             flags=re.IGNORECASE
         )
@@ -512,22 +568,90 @@ class DMConverter:
 
     def _convert_table(self, tokens: str) -> str:
         """表特定转换"""
-        # IDENTITY(1,1) 保留(达梦也支持)
+        # CREATE TABLE name -> CREATE TABLE "name" (对象名加双引号)
+        def _fmt_table_name(m):
+            name = m.group(1)
+            return f'CREATE TABLE "{DMConverter._quote_name(name)}"'
         tokens = re.sub(
-            r'\bIDENTITY\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)',
-            r'IDENTITY(\1, \2)',
+            r'CREATE\s+TABLE\s+([\w.]+)',
+            _fmt_table_name,
             tokens,
             flags=re.IGNORECASE
         )
-        # 列级 IDENTITY (无括号) -> IDENTITY(1,1)
+
+        # === 规则2: IDENTITY自增列处理 ===
+        # 达梦要求: 列定义中不写IDENTITY,而在表定义外单独声明 IDENTITY("列名", start, step)
+        # SQL Server: "id" INTEGER IDENTITY(1,1) NOT NULL
+        # 达梦:       "id" INTEGER NOT NULL
+        #             IDENTITY("id", 1, 1)
+        identity_info = None  # (col_name, start, step)
+
+        # 步骤1: 提取IDENTITY列名和参数
+        # 匹配: col_name TYPE IDENTITY(start, step) — 在token阶段col_name可能是标识符占位符
+        # 也可能是原始名: [id] INTEGER IDENTITY(1,1) 或 "id" INTEGER IDENTITY(1,1) 或 id INTEGER IDENTITY(1,1)
+        m_id = re.search(
+            r'(?:"(\w+)"|\[(\w+)\]|(\w+))\s+\w+(?:\s*\([^)]*\))?\s+IDENTITY\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)',
+            tokens, re.IGNORECASE
+        )
+        if m_id:
+            col_name = m_id.group(1) or m_id.group(2) or m_id.group(3)
+            identity_info = (col_name, m_id.group(4), m_id.group(5))
+        else:
+            # IDENTITY(无参数)
+            m_id = re.search(
+                r'(?:"(\w+)"|\[(\w+)\]|(\w+))\s+\w+(?:\s*\([^)]*\))?\s+IDENTITY\b(?!\s*\()',
+                tokens, re.IGNORECASE
+            )
+            if m_id:
+                col_name = m_id.group(1) or m_id.group(2) or m_id.group(3)
+                identity_info = (col_name, '1', '1')
+
+        # 步骤2: 从列定义中删除IDENTITY关键字(含参数)和NOT FOR REPLICATION
+        # 先删: IDENTITY(1,1) NOT FOR REPLICATION
         tokens = re.sub(
-            r'\bIDENTITY\b(?!\s*\()',
-            'IDENTITY(1,1)',
+            r'\s+IDENTITY\s*\(\s*\d+\s*,\s*\d+\s*\)(\s+NOT\s+FOR\s+REPLICATION)?',
+            '',
             tokens,
             flags=re.IGNORECASE
         )
-        # NOT FOR REPLICATION -> 去掉
+        # 再删: IDENTITY(无参数) NOT FOR REPLICATION
+        tokens = re.sub(
+            r'\s+IDENTITY\b(?!\s*\()(\s+NOT\s+FOR\s+REPLICATION)?',
+            '',
+            tokens,
+            flags=re.IGNORECASE
+        )
+        # 残留 NOT FOR REPLICATION
         tokens = re.sub(r'\bNOT\s+FOR\s+REPLICATION\b', '', tokens, flags=re.IGNORECASE)
+
+        # 步骤3: 在CREATE TABLE最后的右括号后添加IDENTITY子句
+        # 达梦语法: CREATE TABLE "name" (...) IDENTITY("col", start, step)
+        # 必须匹配表定义的结束括号)，避免误匹配列定义中的)
+        if identity_info:
+            col_name, start_val, step_val = identity_info
+            id_clause = f' IDENTITY("{col_name}", {start_val}, {step_val})'
+            # 先删除ON [PRIMARY]等表级后缀(在插入IDENTITY前)，避免干扰匹配
+            tokens = re.sub(r'\)\s+ON\s+\S+\s*$', ')', tokens, flags=re.MULTILINE | re.IGNORECASE)
+            # 匹配表结束的)：独占一行的) 或 行内最后一个)后紧跟行尾/;'等
+            # 优先匹配独占一行的)，否则匹配行尾的)
+            inserted = False
+            # 尝试1: ) 独占一行
+            m1 = re.search(r'^(\s*)\)(\s*$)', tokens, re.MULTILINE | re.IGNORECASE)
+            if m1:
+                tokens = tokens[:m1.start()] + m1.group(1) + ')' + id_clause + m1.group(2) + tokens[m1.end():]
+                inserted = True
+            # 尝试2: ) 在行尾(紧跟NOT NULL等之后)
+            if not inserted:
+                tokens = re.sub(
+                    r'\)(\s*(?:;|\n|$))',
+                    ')' + id_clause + r'\1',
+                    tokens,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
+            self._add_change({'type': 'table', 'line': 0, 'old': 'IDENTITY in column def',
+                            'new': f'IDENTITY("{col_name}", {start_val}, {step_val}) after table',
+                            'desc': '自增列单独拆出(规则2)'})
         # WITH (PAD_INDEX = ...) 等表选项 -> 去掉
         tokens = re.sub(r'\bWITH\s*\([^)]*(?:PAD_INDEX|FILLFACTOR|IGNORE_DUP_KEY|STATISTICS_NORECOMPUTE)[^)]*\)', '', tokens, flags=re.IGNORECASE)
         # ON [PRIMARY] / ON __TOKEN_?__ -> 去掉(表级存储子句)
@@ -1181,23 +1305,69 @@ class DMConverter:
     # ================================================================
 
     def _convert_temp_tables(self, tokens: str) -> str:
-        """临时表 #temp / ##temp -> 达梦GTT或普通表"""
+        """临时表 #temp / ##temp -> 达梦GTT或普通表
+        v3.3.0: #开头的临时表单独给出建表语句(规则3)
+        SQL Server临时表在存储过程中使用CREATE TABLE #xxx创建,
+        达梦需要改为全局临时表(GTT),并单独给出建表语句。
+        """
         # #table -> tmp_table (会话级临时表)
         # ##table -> gtmp_table (全局临时表)
         # 注意: 在token保护下做，所以字符串内的#不会被改
 
-        # 替换 #表名引用
-        new_tokens = re.sub(r'#(\w+)', r'tmp_\1', tokens)
+        # === 规则3: 提取所有#临时表建表语句 ===
+        temp_table_defs = []  # [(原表名, 达梦表名, 列定义)]
+        # 匹配 CREATE TABLE #xxx(...) 或 CREATE TABLE ##xxx(...)
+        # 使用贪婪(.+)匹配到最后一个)，避免NVARCHAR(100)等中间)被误当表结束
+        for m in re.finditer(
+            r'CREATE\s+TABLE\s+(#{1,2})(\w+)\s*\((.+)\)',
+            tokens,
+            re.IGNORECASE | re.DOTALL
+        ):
+            hash_prefix = m.group(1)  # # 或 ##
+            table_name = m.group(2)
+            table_body = m.group(3)
+            if hash_prefix == '##':
+                original_name = f'##{table_name}'
+                dm_name = f'gtmp_{table_name}'
+            else:
+                original_name = f'#{table_name}'
+                dm_name = f'tmp_{table_name}'
+            temp_table_defs.append((original_name, dm_name, table_body))
+
+        # 替换 #表名引用(先##双#再#单#，避免##变成#tmp_)
+        new_tokens = re.sub(r'##(\w+)', r'gtmp_\1', tokens)
+        new_tokens = re.sub(r'#(\w+)', r'tmp_\1', new_tokens)
         if new_tokens != tokens:
             self._add_change({'type': 'temp_table', 'line': 0, 'old': '#table', 'new': 'tmp_table', 'desc': '临时表名转换(需确认达梦GTT定义)'})
 
-        # CREATE TABLE #xxx -> CREATE GLOBAL TEMPORARY TABLE tmp_xxx
+        # CREATE TABLE tmp_xxx -> CREATE GLOBAL TEMPORARY TABLE tmp_xxx (过程中内联)
         new_tokens = re.sub(
-            r'CREATE\s+TABLE\s+tmp_(\w+)',
-            r'CREATE GLOBAL TEMPORARY TABLE tmp_\1',
+            r'CREATE\s+TABLE\s+(tmp_|gtmp_)(\w+)',
+            r'CREATE GLOBAL TEMPORARY TABLE \1\2',
             new_tokens,
             flags=re.IGNORECASE
         )
+
+        # === 规则3: 在文件末尾追加独立的临时表建表语句 ===
+        if temp_table_defs:
+            new_tokens += '\n-- ========================================'
+            new_tokens += '\n-- 以下为临时表独立建表语句(规则3: SQL Server #临时表单独拆出)'
+            new_tokens += '\n-- 请根据实际情况选择GTT(全局临时表)或普通临时表\n'
+            for original_name, dm_name, table_body in temp_table_defs:
+                body = table_body.rstrip('\n')
+                new_tokens += (
+                    f'\n-- 原SQL Server临时表: {original_name}\n'
+                    f'CREATE GLOBAL TEMPORARY TABLE "{dm_name}"\n'
+                    f'({body}\n'
+                    f') ON COMMIT PRESERVE ROWS;\n'
+                )
+                self._add_change({
+                    'type': 'temp_table', 'line': 0,
+                    'old': f'CREATE TABLE {original_name}',
+                    'new': f'独立建表: CREATE GLOBAL TEMPORARY TABLE "{dm_name}"',
+                    'desc': '临时表单独拆出建表语句(规则3)'
+                })
+            new_tokens += '-- ========================================\n'
 
         tokens = new_tokens
         return tokens
