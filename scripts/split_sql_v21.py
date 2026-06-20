@@ -810,9 +810,7 @@ def split_sql_file(
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(obj_content)
                     if not obj_content.rstrip().endswith(';'):
-                        # Oracle/DM 不强制加分号（用 / 代替）
-                        if dialect not in (SQLDialect.ORACLE, SQLDialect.DM):
-                            f.write(';')
+                        f.write(';')
                     f.write('\n')
             
             created_files.append(filepath)

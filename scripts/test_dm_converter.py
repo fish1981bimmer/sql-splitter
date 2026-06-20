@@ -581,5 +581,87 @@ GO"""
         self.assertIn('VARCHAR(50 CHAR)', result.converted)
 
 
+class TestTruncateConversion(unittest.TestCase):
+    """TRUNCATE TABLE -> DELETE FROM 转换测试"""
+
+    def test_truncate_table_in_procedure(self):
+        """存储过程内 TRUNCATE TABLE -> DELETE FROM"""
+        sql = """CREATE PROCEDURE sp_clear_data
+AS
+BEGIN
+    TRUNCATE TABLE temp_data
+    SELECT * FROM users
+END
+GO"""
+        result = convert_sqlserver_to_dm_with_result(sql, 'procedure')
+        self.assertIn('DELETE FROM', result.converted)
+        self.assertNotIn('TRUNCATE', result.converted)
+
+    def test_truncate_table_generic(self):
+        """通用上下文中 TRUNCATE TABLE -> DELETE FROM"""
+        result = convert_sqlserver_to_dm('TRUNCATE TABLE log_table', 'generic')
+        self.assertIn('DELETE FROM', result)
+        self.assertNotIn('TRUNCATE', result)
+
+    def test_truncate_table_case_insensitive(self):
+        """大小写不敏感匹配"""
+        result = convert_sqlserver_to_dm('truncate table MyTable', 'generic')
+        self.assertIn('DELETE FROM', result)
+        self.assertNotIn('TRUNCATE', result)
+        self.assertIn('MyTable', result)
+
+    def test_truncate_preserves_table_name(self):
+        """TRUNCATE转换保留表名"""
+        result = convert_sqlserver_to_dm('TRUNCATE TABLE dbo.transaction_log', 'generic')
+        self.assertIn('DELETE FROM', result)
+        self.assertIn('dbo.transaction_log', result)
+
+
+class TestEndingSemicolon(unittest.TestCase):
+    """TABLE/VIEW结尾分号测试"""
+
+    def test_table_ending_semicolon(self):
+        """表转换后结尾有分号"""
+        sql = """CREATE TABLE users (
+    id INTEGER,
+    name VARCHAR(100)
+)"""
+        result = convert_sqlserver_to_dm(sql, 'table')
+        self.assertTrue(result.rstrip().endswith(';'),
+            f"Table should end with semicolon, got: ...{result[-30:]}")
+
+    def test_view_ending_semicolon(self):
+        """视图转换后结尾有分号"""
+        sql = "CREATE VIEW v_users AS SELECT id, name FROM users"
+        result = convert_sqlserver_to_dm(sql, 'view')
+        self.assertTrue(result.rstrip().endswith(';'),
+            f"View should end with semicolon, got: ...{result[-30:]}")
+
+    def test_index_ending_semicolon(self):
+        """索引转换后结尾有分号"""
+        sql = "CREATE INDEX idx_name ON users(name)"
+        result = convert_sqlserver_to_dm(sql, 'index')
+        self.assertTrue(result.rstrip().endswith(';'),
+            f"Index should end with semicolon, got: ...{result[-30:]}")
+
+    def test_constraint_ending_semicolon(self):
+        """约束转换后结尾有分号"""
+        sql = "ALTER TABLE users ADD CONSTRAINT pk_users PRIMARY KEY (id)"
+        result = convert_sqlserver_to_dm(sql, 'constraint')
+        self.assertTrue(result.rstrip().endswith(';'),
+            f"Constraint should end with semicolon, got: ...{result[-30:]}")
+
+    def test_table_already_has_semicolon_no_duplicate(self):
+        """表已有分号不重复加"""
+        sql = """CREATE TABLE users (
+    id INTEGER,
+    name VARCHAR(100)
+);"""
+        result = convert_sqlserver_to_dm(sql, 'table')
+        # 结尾应该只有一个分号
+        self.assertTrue(result.rstrip().endswith(';'))
+        self.assertNotIn(';;', result)
+
+
 if __name__ == '__main__':
     unittest.main()

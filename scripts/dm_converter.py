@@ -313,6 +313,7 @@ class DMConverter:
         result = self._convert_functions(result)
         result = self._convert_global_vars(result)
         result = self._convert_statements(result)
+        result = self._convert_truncate(result)
         result = self._convert_try_catch(result)
         result = self._convert_transaction(result)
         result = self._convert_top(result)
@@ -354,10 +355,16 @@ class DMConverter:
         # Step 8: GOTO/LABEL 转换(在还原后做，需要看到真实文本)
         result = self._convert_goto_label(result)
 
-        # Step 8: 后处理 - 添加达梦终止符
+        # Step 8: 后处理 - 为存储过程/函数/触发器添加达梦终止符 /
         if ctype in (ConversionType.PROCEDURE, ConversionType.FUNCTION,
                     ConversionType.TRIGGER):
             result = self._add_terminator(result)
+
+        # Step 9: 为TABLE/VIEW/INDEX/CONSTRAINT/SEQUENCE确保结尾有分号
+        if ctype in (ConversionType.TABLE, ConversionType.VIEW,
+                    ConversionType.INDEX, ConversionType.CONSTRAINT,
+                    ConversionType.SEQUENCE):
+            result = self._add_ending_semicolon(result)
 
         return ConversionResult(content, result, self._changes)
 
@@ -1154,6 +1161,18 @@ class DMConverter:
                 self._add_change({'type': 'statement', 'line': 0, 'old': old_stmt, 'new': new_stmt, 'desc': '语句映射'})
                 tokens = new_tokens
         return tokens
+
+    def _convert_truncate(self, tokens: str) -> str:
+        """TRUNCATE TABLE xxx -> DELETE FROM xxx (达梦不支持TRUNCATE在存储过程内)"""
+        new_tokens = re.sub(
+            r'\bTRUNCATE\s+TABLE\s+',
+            'DELETE FROM ',
+            tokens,
+            flags=re.IGNORECASE
+        )
+        if new_tokens != tokens:
+            self._add_change({'type': 'statement', 'line': 0, 'old': 'TRUNCATE TABLE', 'new': 'DELETE FROM', 'desc': '达梦不支持TRUNCATE在存储过程内'})
+        return new_tokens
 
     # ================================================================
     # 通用转换 - TRY-CATCH (括号深度匹配)
@@ -2128,6 +2147,18 @@ class DMConverter:
     # ================================================================
     # 后处理
     # ================================================================
+
+    def _add_ending_semicolon(self, content: str) -> str:
+        """为TABLE/VIEW/INDEX/CONSTRAINT/SEQUENCE对象确保结尾有分号"""
+        content = content.rstrip()
+        # 去掉末尾的GO
+        if re.search(r'\bGO\s*$', content, re.IGNORECASE):
+            content = re.sub(r'\bGO\s*$', '', content, flags=re.IGNORECASE).rstrip()
+        # 去掉末尾多余的分号(后面统一加一个)
+        while content.endswith(';'):
+            content = content[:-1].rstrip()
+        content += ';\n'
+        return content
 
     def _add_terminator(self, content: str) -> str:
         """为存储过程/函数/触发器添加达梦终止符 /"""
