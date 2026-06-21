@@ -601,6 +601,7 @@ sql-splitter/
 ├── references/
 │   ├── sql-splitter-commercialization.md ← 商业化分析（免费/付费边界+定价+路线图）
 │   ├── sql-splitter-productization.md ← 产品化规划（四阶段路线图+架构决策+功能矩阵）
+│   ├── sql-splitter-v350-productization.md ← v3.5.0产品化开发记录（报告+License+GUI+pip）
 │   ├── dm-converter-design.md ← 达梦转换器设计要点
 │   ├── dm-converter-v243-fixes.md ← v2.4.3 修复记录
 │   ├── dm-converter-v246-fixes.md ← v2.4.6 修复记录（捕获组偏移+suffix贪婪+procedure方括号）
@@ -834,6 +835,13 @@ DELIMITER ;
 - **clawhub版本号冲突时**：发布后如果又改了内容，必须升版本号（如3.2.2→3.2.3）重新发布，clawhub不允许覆盖已发布版本
 
 ## 更新日志
+
+### v3.5.0 (2026-06-21)
+- **report_generator.py** — 转换质量报告生成器（兼容性评分0-100 + 风险分级 + HTML/MD/JSON输出 + 7个测试）
+- **license_checker.py** — 版本控制与License管理（社区版≤20对象≤1MB / 专业版无限 / 企业版全部）
+- **gui.py重写** — 完整tkinter GUI（文件选择→拆分→转换→质量报告，专业版功能）
+- **split入口License检查** — split_sql_v21.py对象数量/文件大小限制 + split_sql_v22.py CLI功能守卫
+- **pip打包** — pyproject.toml + src/sql_splitter/ + `sql-splitter` CLI入口
 
 ### v3.4.0 (2026-06-20)
 - **TRUNCATE TABLE → DELETE FROM** — 达梦不支持TRUNCATE在存储过程内，自动将`TRUNCATE TABLE xxx`转换为`DELETE FROM xxx`
