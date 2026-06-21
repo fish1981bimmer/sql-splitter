@@ -758,23 +758,27 @@ def split_sql_file(
     except ImportError:
         from .license_checker import check_object_limit, check_file_size
 
-    file_size = len(sql_content.encode('utf-8')) if isinstance(sql_content, str) else os.path.getsize(input_file)
+    file_size = os.path.getsize(input_file)
     size_allowed, size_msg = check_file_size(file_size)
     if not size_allowed:
-        print(size_msg)
+        file_mb = file_size / (1024 * 1024)
+        print(f"\n⚠️  社区版限制: 文件大小 {file_mb:.1f}MB 超出免费额度 (≤1MB)")
+        print(f"    检测到 {len(found_objects)} 个SQL对象无法处理")
+        print(f"    升级专业版即可无限使用: ¥299/月")
+        print(f"    访问 https://sqlsplitter.com 或运行: sql-splitter license activate <KEY>")
         return SplitResult(
             success=False, output_dir=None, files_created=[],
-            errors=[ErrorHandler.create_file_read_error(input_file, '文件大小超出社区版限制，升级专业版: https://sqlsplitter.com')],
-            warnings=[], stats={}, total=len(found_objects), dry_run=dry_run,
+            errors=[], warnings=[], stats={}, total=0, dry_run=dry_run,
         )
 
     obj_allowed, obj_msg = check_object_limit(len(found_objects))
     if not obj_allowed:
-        print(obj_msg)
+        print(f"\n⚠️  社区版限制: 检测到 {len(found_objects)} 个对象，超出免费额度 (≤20个)")
+        print(f"    升级专业版即可无限使用: ¥299/月")
+        print(f"    访问 https://sqlsplitter.com 或运行: sql-splitter license activate <KEY>")
         return SplitResult(
             success=False, output_dir=None, files_created=[],
-            errors=[ErrorHandler.create_file_read_error(input_file, '对象数量超出社区版限制，升级专业版: https://sqlsplitter.com')],
-            warnings=[], stats={}, total=len(found_objects), dry_run=dry_run,
+            errors=[], warnings=[], stats={}, total=0, dry_run=dry_run,
         )
 
     # ---- 提取并保存每个对象 ----
