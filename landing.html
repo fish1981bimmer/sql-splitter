@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQL Splitter — SQL Server→达梦 一键迁移工具</title>
+<meta name="description" content="SQL Server到达梦数据库的自动化迁移工具。拆分SQL文件、自动语法转换、质量报告、兼容性评分。">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0a0a0a;color:#e5e5e5;line-height:1.6}
+a{color:#60a5fa;text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:960px;margin:0 auto;padding:0 24px}
+/* Hero */
+.hero{padding:80px 0 60px;text-align:center;border-bottom:1px solid #222}
+.hero h1{font-size:2.8rem;font-weight:800;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:12px}
+.hero p{font-size:1.2rem;color:#a3a3a3;max-width:600px;margin:0 auto 32px}
+.hero .btn{display:inline-block;padding:14px 32px;border-radius:8px;font-size:1rem;font-weight:600;margin:0 8px;transition:transform .15s}
+.hero .btn:hover{transform:translateY(-2px);text-decoration:none}
+.btn-primary{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
+.btn-secondary{border:1px solid #404040;color:#a3a3a3}
+.hero .badges{margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.badge{display:inline-block;padding:4px 12px;border-radius:12px;font-size:.8rem;background:#1a1a1a;border:1px solid #333;color:#a3a3a3}
+/* Demo */
+.demo{padding:60px 0;border-bottom:1px solid #222}
+.demo h2{font-size:1.6rem;margin-bottom:24px;text-align:center}
+.demo-box{background:#111;border:1px solid #333;border-radius:12px;padding:24px;font-family:"Menlo","Courier New",monospace;font-size:.9rem;overflow-x:auto}
+.demo-box .prompt{color:#a3a3a3}
+.demo-box .cmd{color:#22c55e}
+.demo-box .output{color:#94a3b8;margin-top:12px;padding-left:16px;border-left:2px solid #333}
+.demo-box .highlight{color:#f59e0b}
+/* Features */
+.features{padding:60px 0;border-bottom:1px solid #222}
+.features h2{font-size:1.6rem;margin-bottom:32px;text-align:center}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.feature-card{background:#111;border:1px solid #222;border-radius:12px;padding:24px}
+.feature-card h3{font-size:1.1rem;margin-bottom:8px;color:#e5e5e5}
+.feature-card p{font-size:.9rem;color:#a3a3a3}
+.feature-icon{font-size:1.5rem;margin-bottom:8px}
+/* Conversion Table */
+.conversion{padding:60px 0;border-bottom:1px solid #222}
+.conversion h2{font-size:1.6rem;margin-bottom:24px;text-align:center}
+.conversion table{width:100%;border-collapse:collapse;margin-top:16px}
+.conversion th{text-align:left;padding:10px 16px;background:#1a1a1a;color:#a3a3a3;font-size:.85rem;border-bottom:1px solid #333}
+.conversion td{padding:10px 16px;border-bottom:1px solid #1a1a1a;font-size:.9rem}
+.conversion td:first-child{color:#f87171}
+.conversion td:nth-child(2){color:#22c55e}
+.conversion tr:hover{background:#1a1a1a}
+/* Pricing */
+.pricing{padding:60px 0;border-bottom:1px solid #222}
+.pricing h2{font-size:1.6rem;margin-bottom:32px;text-align:center}
+.pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px}
+.pricing-card{background:#111;border:1px solid #222;border-radius:12px;padding:28px;text-align:center;position:relative}
+.pricing-card.popular{border-color:#3b82f6}
+.pricing-card .tag{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;padding:4px 16px;border-radius:12px;font-size:.75rem;font-weight:600}
+.pricing-card h3{font-size:1.1rem;margin-bottom:4px}
+.pricing-card .price{font-size:2rem;font-weight:800;color:#e5e5e5;margin:12px 0}
+.pricing-card .price span{font-size:.9rem;font-weight:400;color:#a3a3a3}
+.pricing-card ul{list-style:none;text-align:left;margin:16px 0;padding:0}
+.pricing-card li{padding:6px 0;font-size:.85rem;color:#a3a3a3;border-bottom:1px solid #1a1a1a}
+.pricing-card li::before{content:"✓ ";color:#22c55e}
+.pricing-card li.disabled{color:#525252}
+.pricing-card li.disabled::before{content:"✗ ";color:#525252}
+.pricing-card .btn{display:block;width:100%;padding:12px;border-radius:8px;font-weight:600;margin-top:16px;text-align:center}
+/* CTA */
+.cta{padding:60px 0;text-align:center}
+.cta h2{font-size:1.6rem;margin-bottom:12px}
+.cta p{color:#a3a3a3;margin-bottom:24px}
+/* Footer */
+footer{padding:24px 0;border-top:1px solid #222;text-align:center;color:#525252;font-size:.8rem}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<!-- Hero -->
+<section class="hero">
+  <h1>SQL Splitter</h1>
+  <p>SQL Server → 达梦数据库 一键迁移工具<br>拆分SQL文件 + 自动语法转换 + 质量报告</p>
+  <a href="https://github.com/fish1981bimmer/sql-splitter" class="btn btn-primary">GitHub 开源</a>
+  <a href="#pricing" class="btn btn-secondary">查看定价</a>
+  <div class="badges">
+    <span class="badge">53个单元测试</span>
+    <span class="badge">462个真实对象验证</span>
+    <span class="badge">6600+行Python</span>
+    <span class="badge">MIT-0 开源</span>
+  </div>
+</section>
+
+<!-- Demo -->
+<section class="demo">
+  <h2>30秒迁移1000个SQL对象</h2>
+  <div class="demo-box">
+    <div class="prompt">$ </div>
+    <div class="cmd">pip install sql-splitter</div>
+    <br>
+    <div class="prompt">$ </div>
+    <div class="cmd">sql-splitter HRBI_Stage.sql output_dir --dialect sqlserver --convert-to dm</div>
+    <div class="output">
+      [detect] 方言: SQLSERVER<br>
+      [scan]  找到 <span class="highlight">462 个对象</span><br>
+      拆分对象: 100%|██████████| 462/462 [00:03<00:00]<br>
+      转换完成: 462 成功, 0 失败<br>
+      ━━━━━━━━━━━━━━━━━━━━━━━━━<br>
+      综合兼容性评分: <span class="highlight">92/100</span><br>
+      ✅ 低风险: 448 | ⚠️ 中风险: 12 | 🔴 高风险: 2<br>
+      报告已保存: output_dir_dm/conversion_report.html
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features">
+  <h2>核心功能</h2>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">✂️</div>
+      <h3>SQL文件拆分</h3>
+      <p>将单文件拆分为独立的存储过程、函数、视图、触发器、表、索引、约束文件</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔄</div>
+      <h3>达梦自动转换</h3>
+      <p>40+数据类型映射、30+函数映射、变量/异常/事务/临时表语法自动转换</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔗</div>
+      <h3>依赖分析</h3>
+      <p>自动分析对象间依赖关系，生成按依赖排序的合并脚本merge_all.sql</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>质量报告+评分</h3>
+      <p>兼容性评分0-100、风险项标注、转换明细、HTML/Markdown/JSON多格式报告</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <h3>批量并行处理</h3>
+      <p>多文件并行处理，目录递归扫描，4线程并发</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔀</div>
+      <h3>断点续传</h3>
+      <p>7万行大文件中断后可续传，不从头开始</p>
+    </div>
+  </div>
+</section>
+
+<!-- Conversion Table -->
+<section class="conversion">
+  <h2>转换规则一览</h2>
+  <table>
+    <tr><th>类别</th><th>SQL Server</th><th>达梦</th></tr>
+    <tr><td>声明</td><td>CREATE PROCEDURE ... AS</td><td>CREATE OR REPLACE PROCEDURE ... AS</td></tr>
+    <tr><td>数据类型</td><td>INT / BIT / DATETIME / NVARCHAR</td><td>INTEGER / BOOLEAN / TIMESTAMP / VARCHAR(n CHAR)</td></tr>
+    <tr><td>函数</td><td>GETDATE() / ISNULL() / LEN()</td><td>CURRENT_TIMESTAMP / NVL() / LENGTH()</td></tr>
+    <tr><td>变量</td><td>@var / DECLARE @var</td><td>var / DECLARE var</td></tr>
+    <tr><td>异常</td><td>BEGIN TRY...END TRY</td><td>BEGIN...EXCEPTION WHEN OTHERS THEN...END</td></tr>
+    <tr><td>事务</td><td>COMMIT TRANSACTION</td><td>COMMIT</td></tr>
+    <tr><td>清表</td><td>TRUNCATE TABLE xxx</td><td>DELETE FROM xxx ⚠️</td></tr>
+    <tr><td>终止符</td><td>GO</td><td>/</td></tr>
+  </table>
+</section>
+
+<!-- Pricing -->
+<section class="pricing" id="pricing">
+  <h2>选择适合你的方案</h2>
+  <div class="pricing-grid">
+    <div class="pricing-card">
+      <h3>社区版</h3>
+      <div class="price">免费</div>
+      <ul>
+        <li>SQL文件拆分 (≤20对象)</li>
+        <li>基础达梦转换 (≤20对象)</li>
+        <li>多方言支持</li>
+        <li>依赖分析+合并脚本</li>
+        <li>1MB文件大小限制</li>
+        <li class="disabled">批量处理</li>
+        <li class="disabled">质量报告</li>
+        <li class="disabled">GUI界面</li>
+        <li class="disabled">技术支持</li>
+      </ul>
+      <a href="https://github.com/fish1981bimmer/sql-splitter" class="btn btn-secondary">免费使用</a>
+    </div>
+    <div class="pricing-card popular">
+      <span class="tag">最受欢迎</span>
+      <h3>专业版</h3>
+      <div class="price">¥299<span>/月</span></div>
+      <ul>
+        <li>无限制对象数量</li>
+        <li>无限文件大小</li>
+        <li>批量并行处理</li>
+        <li>断点续传</li>
+        <li>质量报告+兼容性评分</li>
+        <li>结果预览/DIFF</li>
+        <li>GUI界面</li>
+        <li>配置管理</li>
+        <li>工单支持 (48h响应)</li>
+      </ul>
+      <a href="#" class="btn btn-primary">立即购买</a>
+    </div>
+    <div class="pricing-card">
+      <h3>企业版</h3>
+      <div class="price">¥2999<span>/月起</span></div>
+      <ul>
+        <li>专业版全部功能</li>
+        <li>自定义转换规则DSL</li>
+        <li>Docker私有化部署</li>
+        <li>API无限调用</li>
+        <li>数据脱敏</li>
+        <li>定制规则开发</li>
+        <li>专属技术群+SLA</li>
+        <li>对公转账+发票</li>
+      </ul>
+      <a href="#" class="btn btn-secondary">联系我们</a>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+  <h2>还在手改SQL？</h2>
+  <p>从1周缩到10秒，让工具替你做重复劳动</p>
+  <a href="https://github.com/fish1981bimmer/sql-splitter" class="btn btn-primary">开始使用</a>
+</section>
+
+</div>
+
+<footer>
+  <div class="container">
+    © 2026 SQL Splitter · 
+    <a href="https://github.com/fish1981bimmer/sql-splitter">GitHub</a> · 
+    MIT-0 开源协议
+  </div>
+</footer>
+
+</body>
+</html>

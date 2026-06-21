@@ -752,6 +752,33 @@ def split_sql_file(
     if verbose:
         print(f"[scan] 找到 {len(found_objects)} 个对象")
 
+    # ---- 版本限制检查 ----
+    try:
+        from license_checker import check_object_limit, check_file_size
+    except ImportError:
+        from .license_checker import check_object_limit, check_file_size
+    
+    # 文件大小检查
+    file_size = len(sql_content.encode('utf-8')) if isinstance(sql_content, str) else os.path.getsize(input_file)
+    size_allowed, size_msg = check_file_size(file_size)
+    if not size_allowed:
+        print(size_msg)
+        return SplitResult(
+            success=False, output_dir=None, files_created=[],
+            errors=[ErrorHandler.create_file_read_error(input_file, '文件大小超出社区版限制，请升级专业版')],
+            warnings=[], stats={}, total=len(found_objects), dry_run=dry_run,
+        )
+    
+    # 对象数量检查
+    obj_allowed, obj_msg = check_object_limit(len(found_objects))
+    if not obj_allowed:
+        print(obj_msg)
+        return SplitResult(
+            success=False, output_dir=None, files_created=[],
+            errors=[ErrorHandler.create_file_read_error(input_file, '对象数量超出社区版限制，请升级专业版')],
+            warnings=[], stats={}, total=len(found_objects), dry_run=dry_run,
+        )
+
     # ---- 提取并保存每个对象 ----
     all_objects_info = [] # 用于依赖分析
 
