@@ -1628,15 +1628,30 @@ class DMConverter:
     # ================================================================
 
     def _convert_bracket_identifiers(self, tokens: str) -> str:
-        """方括号标识符 [name] -> name (在token化后做，注释和字符串已被保护)
+        """方括号标识符转换 (在token化后做，注释和字符串已被保护)
+        
+        规则(v3.5.3起):
+        - 非类型名: [name] -> "name" (去方括号加双引号)
+          如: [aa] -> "aa", [hrbi].[xxx] -> "hrbi"."xxx"
+        - 类型名: [int] -> int, [nvarchar] -> nvarchar (去方括号不加双引号，后续做类型映射)
         
         注意: 此时注释、字符串和双引号标识符已被tokenize保护为占位符，
-        所以这里的\[和\]只会出现在真实的SQL代码中，不会误改注释/字符串。
-        同时，类型映射需要的 [int] [varchar] 等方括号类型名也在此时去掉方括号
-        （后续_convert_data_types会处理裸类型名映射）。
+        所以这里的[和]只会出现在真实的SQL代码中，不会误改注释/字符串。
         """
-        # 方括号标识符 [name] -> name，加\n限制避免跨行贪婪匹配
-        tokens = re.sub(r'\[([^\]\n]+)\]', r'\1', tokens)
+        # SQL Server类型名集合(小写)，类型名去[]不加双引号，后续_convert_data_types做类型映射
+        type_names_lower = {k.lower() for k in TYPE_MAPPINGS.keys()}
+        
+        def _replace_bracket(m):
+            inner = m.group(1)
+            # 类型名: 去方括号不加双引号(如[int]->int, [nvarchar]->nvarchar)
+            # inner可能含空格如"int identity"，首段判断
+            first_token = inner.split()[0].lower() if inner.split() else inner.lower()
+            if first_token in type_names_lower:
+                return inner  # 去掉方括号，不加双引号
+            # 非类型名: 加双引号(如[aa]->"aa", [hrbi]->"hrbi")
+            return f'"{inner}"'
+        
+        tokens = re.sub(r'\[([^\]\n]+)\]', _replace_bracket, tokens)
         return tokens
 
     # ================================================================
