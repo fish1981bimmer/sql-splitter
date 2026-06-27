@@ -683,11 +683,13 @@ class TestSelectIntoConversion(unittest.TestCase):
         self.assertIn('MyTable', result)
 
     def test_select_into_with_prefix_replaces_dbo(self):
-        """有schema_prefix时dbo.xxx变成prefix.xxx"""
+        """dbo统一删除，不再替换为prefix(v3.5.3起)"""
         sql = "SELECT * FROM dbo.MyTable;"
         result = convert_sqlserver_to_dm(sql, 'procedure', schema_prefix='HRBI_Stage')
-        self.assertIn('HRBI_Stage.MyTable', result)
+        self.assertIn('MyTable', result)
         self.assertNotIn('dbo.', result)
+        # dbo直接删除，不替换为prefix
+        self.assertNotIn('HRBI_Stage.MyTable', result)
 
 
 class TestDDLSemicolons(unittest.TestCase):
