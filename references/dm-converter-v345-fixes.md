@@ -125,3 +125,43 @@ HRBI三大库: Stage=54, DW=157, DM=101个, 全部0失败。
 
 1. 少量`CREATE TABLE #xxx`形式的#未被替换(约4-5处)
 2. 非临时表SELECT INTO需设计更精确判别逻辑
+
+---
+
+## dbo替换规则演进史（重要教训）
+
+dbo替换逻辑经历了三次重大反复，务必记录以避免未来重蹈覆辙：
+
+### v3.4.5: 两段式无prefix时去掉dbo
+- `[dbo].[Users]` → `"Users"` (无prefix时dbo直接删除)
+- `dbo.Users` → `Users` (无prefix时dbo直接删除)
+- 前提：当时schema_prefix总是从文件名提取，不可能为空
+
+### v3.5.3 (2026-06-27): 错误地"统一删除"dbo
+- 昌叔反馈 `[HRBI_Stage].[dbo].[xxx]` 出现双重schema `HRBI_Stage."HRBI_Stage"."xxx"`
+- 修复方案：dbo在任何位置都删除
+- 结果：`[dbo].[Users]` → `"Users"`（正确），但 `dbo.Users` → `Users`（❌ 昌叔要 `hrbi_stage.Users`）
+- 问题根源：混淆了"三段式中dbo是冗余默认schema（该删）"和"两段式中dbo是唯schema标识（该替换）"
+
+### v3.5.4/v3.5.6 (2026-06-27): 正确规则 — 三段式删，两段式替换
+- **三段式**（已有其他schema名）: dbo是SQL Server默认schema，直接删除
+  - `[HRBI_Stage].[dbo].[Users]` → `"HRBI_Stage"."Users"`
+  - `HRBI_Stage.[dbo].[Users]` → `HRBI_Stage."Users"`
+- **两段式**（只有dbo）: dbo替换为schema_prefix
+  - `[dbo].[Users]` → `"hrbi_stage"."Users"`
+  - `dbo.Users` → `hrbi_stage.Users`
+- **区分方法**: 正则先匹配三段式（含其他schema名），再匹配两段式（仅dbo）
+
+### ⚠️ dbo替换正则顺序（不可颠倒）
+1. 双点号 `xxx..yyy` → `xxx.yyy`（最先，避免被后续规则误匹配）
+2. 三段式全引号 `"xxx"."dbo"."yyy"` → `"xxx"."yyy"`
+3. 三段式全裸名 `xxx.dbo.yyy` → `xxx.yyy`
+4. 三段式混合 `xxx."dbo"."yyy"` → `xxx."yyy"`
+5. 两段式有引号 `"dbo"."yyy"` → `"{prefix}""yyy"`
+6. 两段式裸名 `dbo.yyy` → `{prefix}.yyy`
+
+### ⚠️ 核心教训
+- 不要试图用一个统一的规则处理所有dbo场景
+- 三段式和两段式的语义完全不同：一个是冗余中间层，一个是唯一schema标识
+- 用户反馈"不对"时，仔细听他说的具体格式和期望输出，不要盲目改代码
+- 改完dbo规则后必须跑全量测试（312个存储过程），不能只看几个例子

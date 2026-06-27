@@ -363,6 +363,11 @@ class DMConverter:
                     ConversionType.TRIGGER):
             result = self._ensure_ddl_semicolons(result)
 
+        # Step 8.6: 过程体内所有语句(DML/变量赋值)结尾补分号
+        if ctype in (ConversionType.PROCEDURE, ConversionType.FUNCTION,
+                    ConversionType.TRIGGER):
+            result = self._ensure_statement_semicolons(result)
+
         # Step 8: 后处理 - 为存储过程/函数/触发器添加达梦终止符 /
         if ctype in (ConversionType.PROCEDURE, ConversionType.FUNCTION,
                     ConversionType.TRIGGER):
@@ -2397,6 +2402,149 @@ class DMConverter:
                     new_lines[i] = new_lines[i].rstrip() + ';'
                     break
         
+        result = '\n'.join(new_lines)
+        return result
+
+    def _ensure_statement_semicolons(self, content: str) -> str:
+        """确保过程体内所有语句结尾有分号(DML + 变量赋值)
+        
+        达梦存储过程体内，每条DML(INSERT/DELETE/UPDATE/SELECT)和
+        变量赋值(var := expr)都必须以分号结尾。
+        此方法扫描过程体，为缺分号的语句补上。
+        注意: 只处理过程体内的语句，不影响PROCEDURE声明和END;
+        
+        跨行语句处理:
+        - INSERT INTO table_name (columns) SELECT ...  → 在SELECT结束后加分号
+        - v_xxx := expr (非跨行) → 直接加分号
+        - v_xxx := '(' 开头 → 跨行赋值，等到')'行加分号
+        """
+        lines = content.split('\n')
+        new_lines = []
+        
+        def line_has_semicolon(s):
+            """判断一行是否以分号结尾(忽略注释)"""
+            stripped = s.rstrip()
+            comment_pos = stripped.find('--')
+            if comment_pos >= 0:
+                stripped = stripped[:comment_pos].rstrip()
+            return stripped.endswith(';')
+        
+        def is_comment_or_blank(s):
+            stripped = s.strip()
+            return stripped == '' or stripped.startswith('--')
+        
+        def is_end_keyword(s):
+            stripped = s.strip()
+            return bool(re.match(r'^END\s*$', stripped, re.IGNORECASE))
+        
+        def is_begin_keyword(s):
+            stripped = s.strip()
+            return bool(re.match(r'^BEGIN\s*$', stripped, re.IGNORECASE))
+        
+        def is_control_keyword(s):
+            stripped = s.strip()
+            return bool(re.match(r'^(IF|WHILE|CASE|EXCEPTION|THEN|ELSE)\b', stripped, re.IGNORECASE))
+        
+        # 判断一行是否是跨行语句的延续(列定义/括号内)
+        def is_continuation_line(s):
+            stripped = s.strip()
+            # 以逗号结尾 → 列定义
+            if stripped.endswith(','):
+                return True
+            # 以左括号开头 → 列定义列表
+            if stripped.startswith('('):
+                return True
+            # 以右括号结尾 → 可能是跨行语句结束
+            if stripped.endswith(')'):
+                return True
+            return False
+        
+        # 判断一行是否以表名结尾(INSERT INTO xxx)
+        def ends_with_table_name(s):
+            """INSERT INTO table_name 后面没有括号，说明列定义在下一行"""
+            stripped = s.strip()
+            if not re.match(r'(?:INSERT\s+INTO|UPDATE)\b', stripped, re.IGNORECASE):
+                return False
+            # 如果后面直接跟表名(不以(开头)，说明是跨行INSERT
+            if not stripped.endswith('(') and not stripped.endswith(',') and not stripped.endswith(';'):
+                return True
+            return False
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            
+            # 注释行和空行直接保留
+            if is_comment_or_blank(line):
+                new_lines.append(line)
+                i += 1
+                continue
+            
+            # END/BEGIN/控制流关键字直接保留
+            if is_end_keyword(stripped) or is_begin_keyword(stripped) or is_control_keyword(stripped):
+                new_lines.append(line)
+                i += 1
+                continue
+            
+            # 已有分号的行直接保留
+            if line_has_semicolon(line):
+                new_lines.append(line)
+                i += 1
+                continue
+            
+            # 跨行INSERT INTO table_name (列定义在下一行) → 不加分号
+            if ends_with_table_name(stripped):
+                new_lines.append(line)
+                i += 1
+                continue
+            
+            # 变量赋值行(v_xxx := 或 xxx :=)
+            if re.match(r'^\s*(?:v_\w+|\w+)\s*:=', line, re.IGNORECASE):
+                # 跨行赋值(以(或+或,结尾) → 不加分号
+                if stripped.endswith('(') or stripped.endswith(',') or stripped.endswith('+'):
+                    new_lines.append(line)
+                    i += 1
+                    continue
+                else:
+                    new_lines.append(line.rstrip() + ';')
+                    i += 1
+                    continue
+            
+            # DML: INSERT INTO (有括号) / DELETE FROM / UPDATE
+            if re.match(r'^\s*(?:INSERT\s+INTO\s+\w|DELETE\s+FROM|UPDATE\s+\w)\b', line, re.IGNORECASE):
+                # 单行DML(有括号或FROM/表名后直接结束) → 补分号
+                new_lines.append(line.rstrip() + ';')
+                i += 1
+                continue
+            
+            # INSERT INTO (无括号，列定义在下一行) → 已在上面ends_with_table_name处理
+            
+            # SELECT 单独一行(CTAS的SELECT) → 不加分号，等后续处理
+            if re.match(r'^\s*SELECT\b', line, re.IGNORECASE):
+                # 如果前面是AS(CTAS)，AS行应该加分号
+                if new_lines and re.search(r'\bAS\s*$', new_lines[-1].strip(), re.IGNORECASE):
+                    new_lines[-1] = new_lines[-1].rstrip() + ';'
+                new_lines.append(line)
+                i += 1
+                continue
+            
+            # COMMIT/ROLLBACK/RETURN/EXEC
+            if re.match(r'^\s*(?:COMMIT|ROLLBACK|RETURN|GOTO)\b', line, re.IGNORECASE):
+                new_lines.append(line.rstrip() + ';')
+                i += 1
+                continue
+            if re.match(r'^\s*EXEC(?:UTE)?\b', line, re.IGNORECASE):
+                new_lines.append(line.rstrip() + ';')
+                i += 1
+                continue
+            
+            # 其他情况：保留原样
+            new_lines.append(line)
+            i += 1
+        
+        # 处理跨行语句的结尾：
+        # 如果某行以)结尾且前面是INSERT/SELECT/变量赋值，需要加分号
         result = '\n'.join(new_lines)
         return result
 
