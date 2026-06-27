@@ -2005,36 +2005,35 @@ class DMConverter:
     # ================================================================
 
     def _replace_dbo_prefix(self, content: str) -> str:
-        """删除dbo前缀 + 双点号 — 所有对象类型通用(v3.5.3起)
-        
-        规则变更: dbo在任何位置都是直接删除，不再替换为schema_prefix。
-        原因: [HRBI_Stage].[dbo].[xxx]三段式中，dbo是SQL Server默认schema，
-        达梦不需要这个中间层，直接删除即可。用prefix替换dbo会导致
-        裸名前缀场景出现双重schema(如 HRBI_Stage."HRBI_Stage"."xxx")。
+        """替换dbo前缀为schema_prefix + 双点号处理 — 所有对象类型通用
         
         转换规则:
-        - 三段式全引号: "xxx"."dbo"."yyy" -> "xxx"."yyy" (删dbo)
-        - 三段式全裸名: xxx.dbo.yyy -> xxx.yyy (删dbo)
-        - 三段式混合:   xxx."dbo"."yyy" -> xxx."yyy" (删dbo)
-        - 两段式有引号: "dbo"."yyy" -> "yyy" (删dbo)
-        - 两段式裸名:   dbo.yyy -> yyy (删dbo)
-        - 双点号:       xxx..yyy -> xxx.yyy
+        - 三段式: "xxx"."dbo"."yyy" -> "xxx"."yyy" (dbo是SQL Server默认schema，删除)
+        - 三段式裸名: xxx.dbo.yyy -> xxx.yyy (删dbo)
+        - 三段式混合: xxx."dbo"."yyy" -> xxx."yyy" (删dbo)
+        - 两段式有引号: "dbo"."yyy" -> "{prefix}""yyy" (dbo替换为schema_prefix)
+        - 两段式裸名: dbo.yyy -> {prefix}.yyy (dbo替换为schema_prefix)
+        - 双点号: xxx..yyy -> xxx.yyy
+        
+        schema_prefix来自输入文件名，如hrbi_stage.sql → hrbi_stage
         """
+        prefix = self._schema_prefix
         # 双点号: xxx..yyy -> xxx.yyy (SQL Server省略dbo的写法)
         # 必须在三段式之前处理
-        content = re.sub(r'"([^"]+)"\.\.', r'"\1".', content, flags=re.IGNORECASE)  # "xxx".."yyy"
+        content = re.sub(r'"([^"]+)"\.\.', r'"\1".', content, flags=re.IGNORECASE)  # "xxx"."yyy"
         content = re.sub(r'\b(\w+)\.\.', r'\1.', content, flags=re.IGNORECASE)  # xxx..yyy
-        # 三段式全引号: "xxx"."dbo"."yyy" -> "xxx"."yyy"
+        # 三段式全引号: "xxx"."dbo"."yyy" -> "xxx"."yyy" (dbo是默认schema，直接删)
         content = re.sub(r'"([^"]+)"\."dbo"\.', r'"\1".', content, flags=re.IGNORECASE)
-        # 三段式全裸名: xxx.dbo.yyy -> xxx.yyy
+        # 三段式全裸名: xxx.dbo.yyy -> xxx.yyy (删dbo)
         content = re.sub(r'\b(\w+)\.dbo\.', r'\1.', content, flags=re.IGNORECASE)
-        # 三段式混合(裸名+引号dbo): xxx."dbo"."yyy" -> xxx."yyy"
-        # 这种很常见: HRBI_Stage.[dbo].[xxx] → HRBI_Stage."dbo"."xxx" → 需删dbo
+        # 三段式混合(裸名+引号dbo): xxx."dbo"."yyy" -> xxx."yyy" (删dbo)
         content = re.sub(r'\b(\w+)\."dbo"\.', r'\1.', content, flags=re.IGNORECASE)
-        # 两段式有引号: "dbo"."yyy" -> "yyy" (直接删除dbo，不替换为prefix)
-        content = re.sub(r'"dbo"\.', '', content, flags=re.IGNORECASE)
-        # 两段式裸名: dbo.yyy -> yyy (直接删除dbo，不替换为prefix)
-        content = re.sub(r'\bdbo\.', '', content, flags=re.IGNORECASE)
+        # 两段式有引号: "dbo"."yyy" -> "{prefix}""yyy" (dbo替换为schema_prefix)
+        if prefix:
+            content = re.sub(r'"dbo"\.', f'"{prefix}".', content, flags=re.IGNORECASE)
+        # 两段式裸名: dbo.yyy -> {prefix}.yyy (dbo替换为schema_prefix)
+        if prefix:
+            content = re.sub(r'\bdbo\.', f'{prefix}.', content, flags=re.IGNORECASE)
         return content
 
     def _post_convert_table_types(self, content: str) -> str:

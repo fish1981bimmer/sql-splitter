@@ -3,7 +3,7 @@ name: sql-splitter
 description: 拆分 SQL 文件为独立文件（存储过程、函数、视图、触发器、表结构、索引、约束），自动分析依赖并生成合并脚本
 ---
 
-# SQL 文件拆分工具 v3.5.3
+# SQL 文件拆分工具 v3.5.5
 
 将包含多个 SQL 对象的单一文件或目录拆分为独立的 .sql 文件，
 并自动分析对象间依赖关系，生成按依赖排序的合并脚本。
@@ -351,6 +351,12 @@ clawhub publish /Users/a1234/.hermes/skills/sql-splitter --slug sql-splitter --v
 # 正确: clawhub publish /absolute/path/to/skill-dir
 # ⚠️ 版本号冲突：如果同名版本已发布，clawhub会报"Version X.Y.Z already exists"，必须升版本号(如3.2.2→3.2.3)重新发布，不能覆盖
 ```
+
+### ⚠️ clawhub版本号可能落后于实际代码版本
+
+v3.5.3的代码实际已修复dbo统一删除，但clawhub上v3.5.4发布的是旧代码（dbo替换仍用prefix逻辑）。**教训：发布后务必用`clawhub inspect <slug>`确认最新版本号的实际行为**，特别是涉及重大行为变更时。如果发现问题，升版本号重新发布（如3.5.4→3.5.5）。
+
+另外注意：clawhub上可能存在同slug不同owner的技能（如`@fish1981bimmer/sql-splitter`和`@kingaiwork/sql-splitter`），`clawhub inspect`可能报`AMBIGUOUS_SKILL_SLUG`错误。此时用`clawhub install @fish1981bimmer/sql-splitter`指定owner。
 
 ### 发布到 GitHub
 
@@ -877,19 +883,21 @@ DELIMITER ;
 - **#临时表正则修复** — 列定义中的`)`截断匹配，改用贪婪匹配。`##`全局临时表不再被替换为`#tmp_`
 - **token_map碰撞修复** — Step3重新tokenize占位符key覆盖原key，字符串`'N/A'`变成标识符`"v_users"`。新增`start_counter`参数避免碰撞
 
-### v3.5.3 (2026-06-27)
-- **方括号替换规则变更** — `_convert_bracket_identifiers()`区分类型名和普通标识符：非类型名`[aa]`→`"aa"`(加双引号)，类型名`[int]`→`int`(不加双引号)。v3.5.2及以前所有方括号内容都不加双引号(→裸名)
-- 59个单元测试全部通过，7条转换规则实际验证全部正确
-- 312个存储过程拆分验证(Stage=54, DW=157, DM=101)
-
-### v3.5.2 (2026-06-27)
-- 规则1细化-区分列名/schema表名/类型名的[]替换逻辑描述
-
-### v3.5.1 (2026-06-27)
-- 删除社区版限制描述（license_checker.py已从代码库移除，对象数量/文件大小限制不再强制）
-
 ### v3.2.4 (2026-06-14)
-- **更新日志排序修正** — 所有版本严格按版本号降序排列 (2026-06-14)
+- **更新日志排序修正** — 所有版本严格按版本号降序排列
+- **旧版日志精简** — 去掉重复子项展开，保持简洁
+
+### v3.2.3 (2026-06-14)
+- **存储过程PROCEDURE用AS而非IS** — 达梦存储过程声明用`AS`，函数用`IS`，之前PROCEDURE也用了`IS`是错误
+
+### v3.2.2 (2026-06-14)
+- **存储过程VARCHAR(n)加CHAR语义** — DECLARE变量和参数中的`VARCHAR(n)` → `VARCHAR(n CHAR)`，与TABLE转换一致
+- **CAST中nvarchar→VARCHAR(n CHAR)** — `cast(x as nvarchar(50))` → `CAST(x AS VARCHAR(50 CHAR))`，之前nvarchar未映射
+- **_post_convert_generic_types增强** — 新增裸类型名映射(via `_bare_type_pattern`)，之前只映射方括号包裹的类型
+- **44个单元测试全部通过**(含4个新增PROCEDURE类型映射测试)
+- **462个真实SQL对象端到端测试通过**(HRBI_Stage.sql, 7万行)
+
+### v3.2.1 (2026-06-14)
 - **SET NOCOUNT ON/OFF直接删除** — 之前注释保留，用户要求直接去掉(达梦不需要)
 - **SET NOCOUNT ON;带分号不匹配** — 正则加`\s*;?`兼容行末分号，之前只匹配无分号的`SET NOCOUNT ON`
 - **批量转换脚本** — 新增`scripts/batch_convert.py`，写脚本文件而非`python3 -c`内联(安全扫描会拦截后者)
